@@ -278,3 +278,31 @@ final publication commit is scanned again before changing visibility.
 Credentials and raw evidence remain local and ignored. These checks report no
 detected secrets; they do not turn the experimental runtime into a supported or
 production-ready integration.
+
+## Durable jobs and six-hour polling
+
+The helper now creates a private per-query record before submission, persists
+the conversation ID while reading SSE, and retrieves results independently of
+the submission process. `--background`, `--jobs`, `--status`, `--result`, and
+`--watch` support concurrent agent work without replaying prompts. Retrieval has
+a six-hour polling window after lock acquisition, retries transient reads with
+`Retry-After`, preserves resumable state on auth errors/timeouts, and caches
+completed results. OS locks and atomic writes isolate concurrent job updates.
+
+At 15:57 UTC on 2026-09-05, two documented CLI background commands submitted
+separate queries concurrently. `--watch` returned `JOB_A 7093` for 173 × 41 and
+`JOB_B 7807` for 211 × 37 under their respective job IDs. Read-only verification
+confirmed `gpt-6-pro` final messages and exact submitted-message ancestry for
+both. Separate `--result` commands returned each cached answer with network
+permission omitted. Calls 3 and 4 of the ten-call allowance were used; no
+submission was retried. Private evidence remains in `.diagnostics/` and the
+ignored owner-only `.gpt-pro-jobs/` directory.
+
+All 26 tests pass. New coverage includes split/interrupted SSE, early ID
+persistence, stream handoff, concurrent writers, offline result caching, exact
+answer matching after later turns, ambiguous answers, wrong-model metadata, read
+retries, auth failures, and refusal to resubmit jobs without handles. A
+simulated clock verifies an answer after 45 minutes and six-hour expiry with
+resumption. No six-hour live soak test was performed. If a connection dies
+before the server reveals its conversation ID, automatic recovery remains
+unsafe; the job is retained without automatically submitting another request.
