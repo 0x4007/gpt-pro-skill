@@ -1055,11 +1055,11 @@ async function run(prompt: string): Promise<string> {
         accept: "text/event-stream",
         "content-type": "application/json",
         "oai-genui-client-actions": "open_entity_detail",
-        "oai-is-client-observation": `v1.s.p.${
+        "x-oai-is-client-observation": `v1.s.p.${
           randomUuid().replaceAll("-", "").slice(0, 16)
         }`,
-        "oai-is-pending-updates": '{"v":3,"updates":[]}',
-        "oai-turn-trace-id": traceId,
+        "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
+        "x-oai-turn-trace-id": traceId,
         "openai-sentinel-chat-requirements-token":
           requirements.chatRequirementsToken,
         "openai-sentinel-proof-token": requirements.proof,

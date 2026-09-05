@@ -7,6 +7,8 @@ Use this skill only when the user asks for a GPT Pro answer or explicitly invoke
 
 Current status: experimental and not working end to end. The captured HAR ends in a background stream handoff. The helper now polls the conversation after a handoff for up to 30 minutes and returns only a completed final answer belonging to the submitted message. Read-only live validation on 2026-09-05 retrieved a completed answer from an existing conversation and rejected it for a different message ID. One user-approved fresh prompt test on 2026-09-05 at 04:17 UTC reached conversation submission but returned HTTP 403, "Unusual activity has been detected from your device." The helper exited with code 1 and no answer. No retry was made. Quota consumption was not verified.
 
+A fresh browser capture on 2026-09-05 at 05:06 UTC returned the requested smoke-test answer with `gpt-6-pro`. Its endpoint, client build, and request structure matched the original HAR. Comparison identified three missing `x-` header prefixes in the helper; those names are now corrected. This change has not yet passed a browser-free live test. Both HAR files remain local and Git-ignored.
+
 Run the helper with the user's prompt as arguments, or pipe the prompt on stdin:
 
 ```sh
