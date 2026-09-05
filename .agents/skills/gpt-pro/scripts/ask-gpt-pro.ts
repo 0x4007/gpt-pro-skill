@@ -1,4 +1,5 @@
 import { createContext, runInContext } from "node:vm";
+import { JobStore, POLL_WINDOW_MS, type ProJob } from "./jobs.ts";
 
 type JsonObject = Record<string, any>;
 
@@ -940,65 +941,131 @@ export function answerForMessage(
   messageId: string,
 ): string | undefined {
   const mapping = assertRecord(conversation.mapping, "Conversation mapping");
-  let nodeId = conversation.current_node;
-  const visited = new Set<string>();
-  let answer: string | undefined;
-  while (typeof nodeId === "string" && !visited.has(nodeId)) {
-    visited.add(nodeId);
-    const node = mapping[nodeId];
-    if (!node || typeof node !== "object") return undefined;
-    const message = node.message;
-    if (message?.author?.role === "user") {
-      return message.id === messageId ? answer : undefined;
-    }
+  // Other turns can advance current_node while this job is pending. Search all
+  // completed finals, but accept only an unambiguous answer for this user turn.
+  const answers = new Set<string>();
+  for (const node of Object.values(mapping)) {
+    const message = node?.message;
     if (
-      answer === undefined && message?.author?.role === "assistant" &&
-      message.channel === "final" &&
-      message.status === "finished_successfully" && message.end_turn === true &&
-      message.content?.content_type === "text" &&
-      Array.isArray(message.content.parts)
-    ) {
-      const text = message.content.parts.filter((part: unknown) =>
-        typeof part === "string"
-      ).join("");
-      if (text.trim()) answer = text;
+      message?.author?.role !== "assistant" || message.channel !== "final" ||
+      message.status !== "finished_successfully" || message.end_turn !== true ||
+      message.content?.content_type !== "text" ||
+      !Array.isArray(message.content.parts) ||
+      (message.metadata?.model_slug && message.metadata.model_slug !== MODEL)
+    ) continue;
+    let parent = node.parent;
+    const visited = new Set<string>();
+    while (typeof parent === "string" && !visited.has(parent)) {
+      visited.add(parent);
+      const ancestor = mapping[parent];
+      if (!ancestor) break;
+      if (ancestor.message?.author?.role === "user") {
+        if (ancestor.message.id === messageId) {
+          const text = message.content.parts.filter((part: unknown) =>
+            typeof part === "string"
+          ).join("");
+          if (text.trim()) answers.add(text);
+        }
+        break;
+      }
+      parent = ancestor.parent;
     }
-    nodeId = node.parent;
   }
-  return undefined;
+  return answers.size === 1 ? [...answers][0] : undefined;
 }
 
-async function waitForAnswer(
-  session: ChatSession,
-  conversationId: string,
-  messageId: string,
+export interface PollOptions {
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export async function pollJob(
+  session: Pick<ChatSession, "fetch">,
+  job: ProJob,
+  save: (job: ProJob) => Promise<void>,
+  options: PollOptions = {},
 ): Promise<string> {
-  const signal = AbortSignal.timeout(30 * 60 * 1000);
-  while (!signal.aborted) {
-    const response = await session.fetch(
-      `${CHATGPT_ORIGIN}/backend-api/conversation/${
-        encodeURIComponent(conversationId)
-      }`,
-      { signal, headers: { accept: "application/json" } },
-    );
-    const body = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `Conversation retrieval returned ${response.status}: ${
-          safeResponseSummary(body)
-        }`,
-      );
-    }
-    const answer = answerForMessage(
-      assertRecord(JSON.parse(body), "Conversation response"),
-      messageId,
-    );
-    if (answer !== undefined) return answer;
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-  throw new Error(
-    "Background answer was not ready within 30 minutes; do not resubmit the prompt automatically.",
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ??
+    ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = now() + POLL_WINDOW_MS;
+  const conversationId = requiredString(
+    job.conversationId,
+    "Job conversation ID",
   );
+  job.status = "pending";
+  await save(job);
+  while (now() < deadline) {
+    let retryable = false;
+    let completed: string | undefined;
+    let delay = job.pollCount < 6 ? 5000 : 30_000;
+    try {
+      const response = await session.fetch(
+        CHATGPT_ORIGIN + "/backend-api/conversation/" +
+          encodeURIComponent(conversationId),
+        {
+          signal: AbortSignal.timeout(
+            Math.max(1, Math.min(60_000, deadline - now())),
+          ),
+          headers: { accept: "application/json" },
+        },
+      );
+      job.pollCount++;
+      job.lastPollAt = new Date(now()).toISOString();
+      if (
+        response.status === 429 || response.status >= 500 ||
+        response.status === 404
+      ) {
+        const retryAfter = response.headers.get("retry-after");
+        const seconds = retryAfter === null ? NaN : Number(retryAfter);
+        const retryMs = Number.isFinite(seconds)
+          ? seconds * 1000
+          : Date.parse(retryAfter ?? "") - now();
+        if (Number.isFinite(retryMs) && retryMs > 0) {
+          delay = Math.max(delay, retryMs);
+        }
+        await response.body?.cancel();
+        job.lastError = "Conversation retrieval returned HTTP " +
+          response.status;
+        retryable = true;
+      } else if (!response.ok) {
+        await response.body?.cancel();
+        job.lastError = "Conversation retrieval returned HTTP " +
+          response.status + "; resume this job after resolving access";
+      } else {
+        const conversation = assertRecord(
+          await response.json(),
+          "Conversation response",
+        );
+        const answer = answerForMessage(conversation, job.messageId);
+        delete job.lastError;
+        if (answer !== undefined) {
+          completed = answer;
+        }
+        retryable = true;
+      }
+    } catch {
+      // A read failure is safe to retry. Never repeat the conversation POST.
+      job.lastError =
+        "Conversation retrieval interrupted; retrying the existing job";
+      retryable = true;
+    }
+    if (completed !== undefined) {
+      job.answer = completed;
+      job.status = "completed";
+      await save(job);
+      return completed;
+    }
+    await save(job);
+    if (!retryable) throw new Error(job.lastError);
+    const remaining = deadline - now();
+    if (remaining > 0) await sleep(Math.min(delay, remaining));
+  }
+  job.status = "timed_out";
+  job.lastError =
+    "No completed answer within six hours; resume this job without resubmitting";
+  await save(job);
+  throw new Error(job.lastError);
 }
 
 function appendAssistantValue(
@@ -1129,12 +1196,16 @@ export function conversationBody(
   };
 }
 
-export async function run(prompt: string): Promise<string> {
-  const session = new ChatSession(await loadWebSession());
+async function submitConversation(
+  session: ChatSession,
+  job: ProJob,
+  store: JobStore,
+): Promise<void> {
+  const prompt = job.prompt;
   const sentinel = await SentinelHarness.create(session);
   const requirements = await sentinel.chatRequirements();
   const traceId = randomUuid();
-  const messageId = randomUuid();
+  const messageId = job.messageId;
 
   const prepareBody = {
     action: "next",
@@ -1186,9 +1257,12 @@ export async function run(prompt: string): Promise<string> {
     );
   }
 
+  job.status = "submitting";
+  await store.save(job);
   const response = await session.fetch(
     `${CHATGPT_ORIGIN}/backend-api/f/conversation`,
     {
+      signal: AbortSignal.timeout(POLL_WINDOW_MS),
       method: "POST",
       headers: {
         accept: "text/event-stream",
@@ -1209,35 +1283,242 @@ export async function run(prompt: string): Promise<string> {
       body: JSON.stringify(conversationBody(prompt, messageId)),
     },
   );
-  const body = await response.text();
   if (!response.ok) {
-    throw new Error(
-      `Conversation returned ${response.status}: ${safeResponseSummary(body)}`,
-    );
+    job.status = response.status >= 400 && response.status < 500
+      ? "failed"
+      : "uncertain";
+    job.lastError = "Conversation returned HTTP " + response.status +
+      "; do not resubmit automatically";
+    await response.body?.cancel();
+    await store.save(job);
+    throw new Error(job.lastError);
   }
-  const parsed = parseSseText(body);
-  if (parsed.eventTypes.includes("stream_handoff")) {
-    return await waitForAnswer(
-      session,
-      requiredString(parsed.conversationId, "Background conversation id"),
-      messageId,
-    );
+  await captureConversation(response, async (id) => {
+    if (job.conversationId && job.conversationId !== id) {
+      throw new Error("Conversation ID changed during submission");
+    }
+    job.conversationId = id;
+    job.status = "pending";
+    await store.save(job);
+  });
+  if (!job.conversationId) {
+    throw new Error("Submission ended without a recoverable conversation ID");
   }
-  return completedAnswer(parsed);
 }
 
-async function readPrompt(): Promise<string> {
-  const fromArgs = Deno.args.join(" ").trim();
-  if (fromArgs) return fromArgs;
-  const fromStdin = await new Response(Deno.stdin.readable).text();
-  const prompt = fromStdin.trim();
+export async function captureConversation(
+  response: Response,
+  saveId: (id: string) => Promise<void>,
+): Promise<void> {
+  if (!response.body) throw new Error("Submission returned no stream");
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let saved: string | undefined;
+  const consume = async (frame: string) => {
+    const parsed = parseSseText(frame);
+    if (parsed.conversationId && parsed.conversationId !== saved) {
+      await saveId(parsed.conversationId);
+      saved = parsed.conversationId;
+    }
+    return parsed.terminal || parsed.eventTypes.includes("stream_handoff");
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        if (buffer) await consume(buffer);
+        break;
+      }
+      buffer += value;
+      let match: RegExpExecArray | null;
+      while ((match = /\r?\n\r?\n/.exec(buffer))) {
+        const frame = buffer.slice(0, match.index);
+        buffer = buffer.slice(match.index + match[0].length);
+        if (await consume(frame)) return;
+      }
+      if (buffer.length > 8 * 1024 * 1024) {
+        throw new Error("Submission event exceeded the supported size");
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+async function accountIdentity(session: WebSession): Promise<string> {
+  const parts = session.accessToken.split(".");
+  let claims: JsonObject;
+  try {
+    claims = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    throw new Error("Invalid web-session identity");
+  }
+  const subject = requiredString(claims.sub, "Web-session subject");
+  const account = session.headers["chatgpt-account-id"] ??
+    claims["https://api.openai.com/auth"]?.chatgpt_account_id ?? "";
+  const bytes = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify([subject, account])),
+  );
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export async function submitJob(
+  prompt: string,
+  store = new JobStore(),
+  onCreated?: (job: ProJob) => void,
+): Promise<ProJob> {
+  const auth = await loadWebSession();
+  const job = await store.create(prompt, await accountIdentity(auth));
+  onCreated?.(job);
+  return await store.withLock(job.id, async (current) => {
+    try {
+      await submitConversation(new ChatSession(auth), current, store);
+    } catch (error) {
+      if (current.conversationId) {
+        current.status = "pending";
+        current.lastError =
+          "Initial stream interrupted; retrieve the existing conversation";
+      } else {
+        if (current.status !== "failed") {
+          current.status = current.status === "preparing"
+            ? "failed"
+            : "uncertain";
+        }
+        current.lastError ??= current.status === "uncertain"
+          ? "Submission outcome unknown; do not resubmit automatically"
+          : "Preparation failed before submission";
+        await store.save(current);
+        throw new Error(current.lastError + "; job " + current.id);
+      }
+    }
+    await store.save(current);
+    return current;
+  });
+}
+
+export async function resultForJob(
+  id: string,
+  store = new JobStore(),
+): Promise<string> {
+  return await store.withLock(id, async (job) => {
+    if (job.status === "completed") {
+      return requiredString(job.answer, "Saved answer");
+    }
+    if (!job.conversationId) {
+      throw new Error(
+        "Job has no conversation ID (" + job.status +
+          "); do not resubmit automatically",
+      );
+    }
+    const auth = await loadWebSession();
+    if (await accountIdentity(auth) !== job.account) {
+      throw new Error("Web-session account does not match this job");
+    }
+    return await pollJob(
+      new ChatSession(auth),
+      job,
+      (value) => store.save(value),
+    );
+  });
+}
+
+export async function run(prompt: string): Promise<string> {
+  const job = await submitJob(
+    prompt,
+    undefined,
+    (job) => console.error("GPT Pro job: " + job.id),
+  );
+  return await resultForJob(job.id);
+}
+
+function jobSummary(job: ProJob) {
+  return {
+    jobId: job.id,
+    status: job.status,
+    model: job.model,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    lastPollAt: job.lastPollAt,
+    pollCount: job.pollCount,
+    conversationKnown: !!job.conversationId,
+    promptPreview: job.prompt.slice(0, 120),
+    lastError: job.lastError,
+  };
+}
+
+export async function main(args: string[]): Promise<void> {
+  const store = new JobStore();
+  const command = args[0];
+  if (command === "--help") {
+    console.log(
+      "Usage: ask-gpt-pro.ts [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.",
+    );
+    return;
+  }
+  if (command === "--jobs") {
+    if (args.length !== 1) throw new Error("--jobs takes no arguments");
+    console.log(JSON.stringify((await store.list()).map(jobSummary)));
+    return;
+  }
+  if (command === "--status" || command === "--result") {
+    if (args.length !== 2) throw new Error(command + " requires one job ID");
+    if (command === "--status") {
+      console.log(JSON.stringify(jobSummary(await store.read(args[1]))));
+    } else console.log(await resultForJob(args[1], store));
+    return;
+  }
+  if (command === "--watch") {
+    if (args.length !== 1) throw new Error("--watch takes no arguments");
+    const pending = (await store.list()).filter((job) =>
+      job.conversationId && job.status !== "completed" &&
+      job.status !== "failed"
+    );
+    await Promise.all(pending.map(async (job) => {
+      try {
+        const answer = await resultForJob(job.id, store);
+        console.log(
+          JSON.stringify({ jobId: job.id, status: "completed", answer }),
+        );
+      } catch (error) {
+        console.log(
+          JSON.stringify({
+            jobId: job.id,
+            status: (await store.read(job.id)).status,
+            error: redactSensitiveText(errorText(error)),
+          }),
+        );
+        Deno.exitCode = 1;
+      }
+    }));
+    return;
+  }
+  const background = command === "--background";
+  let promptArgs = background ? args.slice(1) : args;
+  if (promptArgs[0] === "--") promptArgs = promptArgs.slice(1);
+  else if (promptArgs[0]?.startsWith("--")) {
+    throw new Error(
+      "Unknown option; use -- before a prompt that starts with --",
+    );
+  }
+  let prompt = promptArgs.join(" ").trim();
+  if (!prompt) prompt = (await new Response(Deno.stdin.readable).text()).trim();
   if (!prompt) throw new Error("Provide a prompt as arguments or stdin");
-  return prompt;
+  if (background) {
+    const job = await submitJob(
+      prompt,
+      store,
+      (job) => console.error("GPT Pro job: " + job.id),
+    );
+    console.log(JSON.stringify(jobSummary(job)));
+  } else console.log(await run(prompt));
 }
 
 if (import.meta.main) {
   try {
-    console.log(await run(await readPrompt()));
+    await main(Deno.args);
   } catch (error) {
     console.error(redactSensitiveText(errorText(error)));
     Deno.exitCode = 1;

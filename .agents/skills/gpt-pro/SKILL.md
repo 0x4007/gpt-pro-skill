@@ -23,15 +23,36 @@ matches the browser. Seventeen offline tests pass. See
 successful acceptance. This is a working experimental path, not proof of
 long-term reliability across SDK changes or session expiry.
 
-The helper polls the conversation after a background handoff for up to 30
-minutes and returns only a completed final answer belonging to the submitted
-message. Live test B retrieved its completed answer through Deno; focused tests
-also reject answers for a different message ID.
+The helper persists a private job record before submission and saves the
+conversation ID as soon as it arrives. Retrieval polls for up to six hours after
+acquiring the per-job lock and returns only an unambiguous completed final
+answer belonging to the submitted message. Each job has a unique ID, account
+binding, OS lock, and atomic saved state. A later conversation turn does not
+hide its result.
+
+For complex questions, use `--background <prompt>`, retain the returned job ID,
+and continue independent work. Use `--result <job-id>` to wait for one job or
+`--watch` to retrieve the current pending set concurrently with JSON-line
+results. Run these waiting commands through the agent's background process tool
+and keep its handle. The server generates remotely; no local daemon is
+installed. Use `--jobs` and `--status <job-id>` to inspect local state.
+Completed results are cached and need no network or credentials to reread.
+
+If the process stops, resume retrieval using the same job ID. Never resubmit
+because a wait or process timed out. A job without a saved conversation ID
+cannot be safely recovered automatically; report its `uncertain`, `submitting`,
+or `preparing` state and inspect conversation history before any new submission.
+Transient GET errors and HTTP 404/429/5xx retry within the six-hour window;
+authentication failures stop and preserve the resumable job.
+
+See the [agent workflow](../../../README.md) for complete commands and recovery
+semantics. Job records include prompts and answers: keep `.gpt-pro-jobs/`
+owner-only and Git-ignored. They never contain authentication or challenge data.
 
 Run the helper with the user's prompt as arguments, or pipe the prompt on stdin:
 
 ```sh
-deno run --allow-read --allow-net=chatgpt.com \
+deno run --allow-read --allow-write --allow-net=chatgpt.com \
   .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts "<prompt>"
 ```
 
