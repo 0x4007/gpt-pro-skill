@@ -258,3 +258,23 @@ type checking, formatting, and Codex review passed for the implementation. Final
 delivery can now leave draft and merge after the documentation review and
 repository checks. No CI or deployment checks are configured for this
 repository.
+
+## Normal skill command repeat and publication audit
+
+At 15:36 UTC on 2026-09-05, the documented skill command ran directly, without
+the diagnostic runner or a browser. The prompt was
+`What is 137 multiplied by
+29? Reply with only the integer.` It returned `3973`
+and exited with code 0. The private CLI output is
+`.diagnostics/normal-skill-test-20260905.log`. This was call 2 of the ten-call
+allowance; no retry was made.
+
+Before publication, Gitleaks 8.30.1 scanned all reachable Git history and found
+no leaks. A separate comparison of all 30 historical file blobs against 153
+locally captured credential and cookie values found no matches and no tracked
+credential, HAR, or raw-diagnostic paths. GitHub PR text and comments were
+checked; no releases or Actions artifacts contained additional attachments. The
+final publication commit is scanned again before changing visibility.
+Credentials and raw evidence remain local and ignored. These checks report no
+detected secrets; they do not turn the experimental runtime into a supported or
+production-ready integration.
