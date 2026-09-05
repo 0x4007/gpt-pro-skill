@@ -26,11 +26,32 @@ the installed folder when replacing it during an upgrade. Codex should see the
 installed skill on the next turn; restart if it is not discovered.
 
 The repository also includes a plugin manifest and repo marketplace. Add the
-catalog with `codex plugin marketplace add 0x4007/gpt-pro-skill`, then use
-`/plugins` or the desktop plugin browser to install `GPT Pro Research`. This is
-GitHub marketplace distribution, not a listing in OpenAI's universal directory.
-Choose standalone installation or plugin installation to avoid duplicate skill
-entries. Plugin packaging does not provide an OAuth login or install Deno.
+catalog and install from the CLI:
+
+```sh
+codex plugin marketplace add 0x4007/gpt-pro-skill
+codex plugin add gpt-pro-research@gpt-pro-skills
+```
+
+You can also use `/plugins` or the desktop plugin browser to install
+`GPT Pro Research`. This is GitHub marketplace distribution, not a listing in
+OpenAI's universal directory. Choose standalone installation or plugin
+installation to avoid duplicate skill entries. Plugin packaging does not provide
+an OAuth login or install Deno.
+
+## Upgrade safely
+
+The standalone installer refuses to overwrite an existing skill. Before an
+upgrade, finish active local processes or stop retrieval and retain their job
+IDs. Preserve local edits if you made any, move the old installed skill folder
+to a backup outside the skill-discovery directory, and rerun the installer.
+Check the new copy with `--help`, `--auth-check`, and a cached `--result`. The
+private state directory remains in place; do not copy credentials into the new
+code folder or submit prompts again to migrate jobs.
+
+For plugin installs, refresh the marketplace and use the plugin manager's
+update/reinstall workflow. Do not install the standalone and plugin versions
+simultaneously unless you deliberately want duplicate skill entries.
 
 ## Sign in and import a session
 

@@ -42,6 +42,39 @@ This is a browser-free **request runtime**, not a browser-free login flow. It is
 usable by developers comfortable with DevTools; it is not turnkey consumer
 onboarding. Use your own account with access to `gpt-6-pro`.
 
+## Research routing
+
+The skill supports explicit GPT Pro requests and deep/substantial research. It
+uses the GPT Pro conversation workflow, not ChatGPT's separate Deep Research
+product mode. Ask for primary-source URLs and verify important claims. Keep
+Perplexity or another research tool as a fallback if Pro is unavailable.
+
+Installing the skill does not edit another developer's global instructions. For
+the same preferred routing, add this optional rule to your own AGENTS.md:
+
+> Use gpt-pro for explicit Pro requests and substantial/deep research. Follow
+> topic-specific official-documentation guidance first. Use background jobs,
+> retain job IDs, verify important cited sources, and keep Perplexity as a
+> fallback. Honor explicit user tool choices and existing call budgets.
+
+## Command reference
+
+| Command                                     | Result                                                      |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| `<prompt>`                                  | Submit once, wait, and print the completed answer           |
+| `--background <prompt>`                     | Submit once and return a JSON job summary after handoff     |
+| `--jobs`                                    | List local job summaries as JSON                            |
+| `--status <job-id>`                         | Read one local job summary without polling                  |
+| `--result <job-id>`                         | Resume polling or print the cached answer                   |
+| `--watch`                                   | Collect the current pending jobs concurrently as JSON lines |
+| `--auth-import <file>` or `--auth-import -` | Import a private session from a file or stdin               |
+| `--auth-check`                              | Make a read-only authentication request; no model turn      |
+| `--help`                                    | Print CLI usage                                             |
+
+Place `--state-dir /absolute/private/directory` before any command to override
+private state. Commands exit 0 on success and 1 on failure. Prompts and answers
+may be sensitive; job-list previews and watch output should remain private.
+
 ## Agent workflow
 
 Use the actual installed skill directory. For a repository checkout, set
@@ -144,7 +177,11 @@ deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts
 deno fmt --check README.md .agents/skills/gpt-pro/
 ```
 
-Two concurrent live jobs have been submitted and collected successfully, and
-cached results have been reread without network access. Six-hour expiry and
-resumption are tested with a simulated clock; this is not a six-hour live soak
-test. See [diagnostic findings](.agents/skills/gpt-pro/diagnostics/README.md).
+All 28 offline tests pass. Live verification covers the normal CLI, two
+concurrent jobs, offline cached rereads, and a GitHub-installed copy running
+outside the repository. The installed copy completed a source-backed research
+request with verified `gpt-6-pro` metadata, exact message matching, and three
+`web.run` calls. The plugin catalog is recognized by Codex; the tested local
+installation uses the standalone skill. Six-hour expiry and resumption are
+tested with a simulated clock; this is not a six-hour live soak test. See
+[diagnostic findings](.agents/skills/gpt-pro/diagnostics/README.md).
