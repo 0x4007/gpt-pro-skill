@@ -1,8 +1,8 @@
 # Browser-free submission diagnosis
 
-Status at 14:08 UTC on 2026-09-05: incomplete. The web-session credential
-cutover passes live preparation, but its separately approved model acceptance
-submission returned HTTP 403. All five approved submissions have been used.
+Status at 15:32 UTC on 2026-09-05: browser-free acceptance passed at commit
+`054c3f6`. One model submission returned the exact completed answer, with
+`gpt-6-pro` metadata and verified answer-to-message matching.
 
 Canonical checkout: `/Users/nv/repos/0x4007/gpt-pro-skill`, branch
 `codex/diagnose-browser-free-pro`, based on `0818c19`. No Obscura is involved.
@@ -212,6 +212,34 @@ is confirmed independently by SDK source and successful B evidence; it is not
 yet established as the sole submission blocker. Do not replay either unsent
 request. Use fresh requirements and a message ID for any approved acceptance.
 
+## Successful corrected-helper acceptance
+
+The user authorized another attempt, then expanded the allowance to ten model
+calls, counting the running attempt as call 1. At 15:32 UTC on 2026-09-05,
+commit `054c3f6` completed the original browser-free helper path through an
+ignored diagnostic runner that imports the canonical source and permits only one
+submission. The prompt was
+`Reply with exactly GPT_PRO_FRAMED_ACCEPTANCE_20260905`. The returned answer was
+exactly `GPT_PRO_FRAMED_ACCEPTANCE_20260905`.
+
+The conversation submission returned HTTP 200 and handed off to background
+retrieval. The final conversation response records an assistant final message
+with `model_slug: gpt-6-pro`, `status: finished_successfully`, and
+`end_turn: true`. Walking its parent chain reaches the exact submitted user
+message ID, and `answerForMessage` returns the expected answer. The runner
+recorded one submission, no retry, and exit code 0. No browser runtime was used.
+Private evidence remains in `.diagnostics/http-30579c801111a2`; files
+`0006-request.json`, `0006-response.json`, `0009-response.json`, and
+`acceptance-result.json` establish the request and completed answer. None is
+included in Git. One of the ten authorized calls was used; no additional call is
+needed for this acceptance.
+
+This proves a working experimental browser-free path. The immediately preceding
+web-session implementation failed; correcting proof framing and timezone offset
+then succeeded. The framing mismatch is established by browser and SDK source,
+but this sequence does not separately isolate every correction's necessity.
+Manual snapshot refresh and SDK-interface fragility remain concrete limitations.
+
 ## Verification and delivery boundary
 
 Type checking and all seventeen tests passed, including integrity observation
@@ -225,7 +253,8 @@ deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/
 deno fmt --check .agents/skills/gpt-pro/
 ```
 
-The focused correction is ready for review. The previous browser-free acceptance
-failed; keep the task incomplete and its PR in draft. Do not merge or describe
-these changes as a working GPT Pro fix. Further live diagnosis needs a new
-approved batch and must resolve the cookie/session comparison first.
+The corrected runtime has passed real completed-answer acceptance. Local tests,
+type checking, formatting, and Codex review passed for the implementation. Final
+delivery can now leave draft and merge after the documentation review and
+repository checks. No CI or deployment checks are configured for this
+repository.
