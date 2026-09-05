@@ -306,3 +306,38 @@ simulated clock verifies an answer after 45 minutes and six-hour expiry with
 resumption. No six-hour live soak test was performed. If a connection dies
 before the server reveals its conversation ID, automatic recovery remains
 unsafe; the job is retained without automatically submitting another request.
+
+## Installed skill and research acceptance
+
+The package now uses the Agent Skills layout with `agents/openai.yaml`, a Codex
+plugin manifest, and a GitHub marketplace entry. The skill description covers
+explicit Pro requests and substantial/deep research, with source verification
+and Perplexity fallback guidance. This remains the GPT Pro conversation
+workflow, not a claim to use ChatGPT's separate Deep Research product mode.
+
+The prior repository-relative state lookup was incompatible with normal skill
+installation. Credentials and jobs now live in `~/.local/share/gpt-pro`, with an
+absolute `--state-dir` override. `--auth-import` validates a private copied
+request-header capture or session JSON; `--auth-check` performs a read-only
+request. Invalid imports preserve existing credentials. Browser sign-in and
+session capture/refresh remain manual; no OAuth or device-code flow is provided.
+
+On 2026-09-05, the official bundled skill installer downloaded revision
+`dbee0b4` from GitHub into `~/.agents/skills/gpt-pro`. From `/tmp`, the
+installed copy passed its authentication check, reread a migrated cached job,
+and submitted a fresh research question about official Codex skill guidance. At
+16:32 UTC it returned a completed answer with official source URLs. Read-only
+verification confirmed `gpt-6-pro`, exact job/message matching, and three
+`web.run` tool calls in the saved conversation. The claims matched the official
+documentation fetched independently in this session. This was call 5 of the
+ten-call allowance; no retry was made. Private evidence remains in ignored
+`.diagnostics/` and the private user state directory.
+
+The Codex CLI also accepted the repo marketplace and listed
+`gpt-pro-research@gpt-pro-skills` as available. The standalone skill is
+installed; a duplicate plugin installation was intentionally not added. The
+package is not listed in OpenAI's universal public directory. The user's
+separate global routing repository contains its own committed preference
+changes, outside this public package. All 28 tests, type checking, formatting,
+and local code review passed. Secret scans found no credentials in reachable Git
+history.
