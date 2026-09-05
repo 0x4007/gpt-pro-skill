@@ -22,6 +22,25 @@ function randomUuid(): string {
   return crypto.randomUUID();
 }
 
+export function clientObservation(cookieHeader: string): string {
+  const values = cookieHeader.split(";").map((part) => part.trim())
+    .filter((part) => part.startsWith("__Secure-oai-is="))
+    .map((part) => part.slice("__Secure-oai-is=".length));
+  if (values.length === 0) return "v1.s.m";
+  let state: string;
+  try {
+    state = decodeURIComponent(values[0]);
+  } catch {
+    return "v1.s.i";
+  }
+  if (
+    state.length > 2048 ||
+    !/^ois1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]+$/.test(state)
+  ) return "v1.s.i";
+  // The nonce describes observed integrity state; it is not a random trace ID.
+  return `v1.s.${values.length > 1 ? "d" : "p"}.${state.split(".")[2]}`;
+}
+
 export function redactSensitiveText(value: string): string {
   return value
     .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1<redacted>")
@@ -1055,9 +1074,9 @@ async function run(prompt: string): Promise<string> {
         accept: "text/event-stream",
         "content-type": "application/json",
         "oai-genui-client-actions": "open_entity_detail",
-        "x-oai-is-client-observation": `v1.s.p.${
-          randomUuid().replaceAll("-", "").slice(0, 16)
-        }`,
+        "x-oai-is-client-observation": clientObservation(
+          session.cookies.header(),
+        ),
         "x-oai-is-pending-updates": '{"v":3,"updates":[]}',
         "x-oai-turn-trace-id": traceId,
         "openai-sentinel-chat-requirements-token":
