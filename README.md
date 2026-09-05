@@ -8,23 +8,54 @@ This is an experimental integration with private ChatGPT endpoints. You need
 your own account with access to the model and a valid web-session snapshot. The
 session does not refresh automatically, and SDK changes can break it.
 
-## Setup
+## Install and sign in
 
-Install Deno, clone this repository, and follow the credential schema in
-[SKILL.md](.agents/skills/gpt-pro/SKILL.md). Store your own consistent
-web-session snapshot in repository-root `.env`, with mode `0600`. Never share
-this file. The repository includes no account credentials.
+This repository follows the Agent Skills standard and includes a Codex plugin
+manifest/marketplace for GitHub distribution. For local Codex use, ask the
+built-in installer:
 
-The helper resolves `.env` and `.gpt-pro-jobs/` relative to its own location,
-not the caller's working directory. Keep the repository layout intact.
+```text
+$skill-installer install https://github.com/0x4007/gpt-pro-skill/tree/main/.agents/skills/gpt-pro
+```
+
+The current user-wide skill location is `~/.agents/skills`; the built-in
+installer also supports an explicit `--dest` for that path. See
+[installation and login](.agents/skills/gpt-pro/references/setup.md) for the
+exact installer command and plugin alternative. The package is not listed in
+OpenAI's universal public directory.
+
+**Authentication is still a developer setup flow.** Sign in to ChatGPT in a
+browser, copy the request headers from a successful models request in DevTools,
+then use `--auth-import` and `--auth-check`. The importer validates and stores
+your own snapshot without executing copied commands or retaining challenge
+headers. The check makes no model request. There is no OAuth/device-code login,
+password collection, Codex-login fallback, or automatic session refresh.
+
+Private state now lives in `~/.local/share/gpt-pro/`, independent of repository
+and install paths. It contains `.env` and `.gpt-pro-jobs/`. Directories use mode
+0700 and files mode 0600. The repository contains no account credentials.
+Earlier users can import their repository `.env` and copy completed job records;
+see the setup guide. `--state-dir /absolute/private/directory` overrides the
+location and removes the need for HOME environment access.
+
+This is a browser-free **request runtime**, not a browser-free login flow. It is
+usable by developers comfortable with DevTools; it is not turnkey consumer
+onboarding. Use your own account with access to `gpt-6-pro`.
 
 ## Agent workflow
+
+Use the actual installed skill directory. For a repository checkout, set
+`SKILL_DIR` to `.agents/skills/gpt-pro` instead.
+
+```sh
+SKILL_DIR="$HOME/.agents/skills/gpt-pro"
+```
 
 Submit a question and wait for the answer:
 
 ```sh
-deno run --allow-read --allow-write --allow-net=chatgpt.com \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts "<complex question>"
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" "<complex question>"
 ```
 
 For several questions, submit each in background mode. Each command prints its
@@ -32,22 +63,22 @@ job ID on stderr immediately, then a JSON job summary on stdout after the server
 hands off generation. Save those IDs before proceeding.
 
 ```sh
-deno run --allow-read --allow-write --allow-net=chatgpt.com \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts --background "<question A>"
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --background "<question A>"
 
-deno run --allow-read --allow-write --allow-net=chatgpt.com \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts --background "<question B>"
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --background "<question B>"
 ```
 
 The remote jobs continue after those commands exit. Retrieve one job, or collect
 the pending jobs together:
 
 ```sh
-deno run --allow-read --allow-write --allow-net=chatgpt.com \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts --result <job-id>
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --result <job-id>
 
-deno run --allow-read --allow-write --allow-net=chatgpt.com \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts --watch
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --watch
 ```
 
 `--watch` takes the current set of pending jobs and retrieves them concurrently,
@@ -75,11 +106,11 @@ active retrieval process. Different jobs do not share a lock.
 Inspect local state without making a model request:
 
 ```sh
-deno run --allow-read --allow-write \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts --jobs
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --jobs
 
-deno run --allow-read --allow-write \
-  .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts --status <job-id>
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --status <job-id>
 ```
 
 Prompts can also come from stdin. Use `--` before a prompt beginning with `--`.
@@ -88,11 +119,11 @@ submit again.
 
 ## Recovery and privacy
 
-Job records use an owner-only `.gpt-pro-jobs/` directory, atomic snapshots, and
-per-job OS locks. Each record includes its own message ID, conversation ID,
-account fingerprint, prompt, status, and cached answer. It contains no bearer
-token, cookie, or Sentinel proof. Prompts and answers can still be sensitive:
-keep this directory private and Git-ignored.
+Job records use an owner-only `.gpt-pro-jobs/` directory inside private state,
+atomic snapshots, and per-job OS locks. Each record includes its own message ID,
+conversation ID, account fingerprint, prompt, status, and cached answer. It
+contains no bearer token, cookie, or Sentinel proof. Prompts and answers can
+still be sensitive: keep this directory private and Git-ignored.
 
 A submitted request can lose its connection before the server reveals a
 conversation ID. Such a job is marked `uncertain` when the error is observed; a

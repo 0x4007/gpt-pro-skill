@@ -1,3 +1,4 @@
+import { stateDirectory } from "./state.ts";
 // Private local job state. Never store bearer tokens, cookies, or Sentinel data.
 export const POLL_WINDOW_MS = 6 * 60 * 60 * 1000;
 export type JobStatus =
@@ -36,7 +37,7 @@ const statuses = new Set([
 ]);
 export class JobStore {
   constructor(
-    readonly directory = new URL("../../../../.gpt-pro-jobs/", import.meta.url),
+    readonly directory = new URL(".gpt-pro-jobs/", stateDirectory()),
   ) {}
   private path(id: string, suffix = ".json"): URL {
     if (!ID.test(id)) throw new Error("Invalid GPT Pro job ID");
