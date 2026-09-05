@@ -20,21 +20,15 @@ relative to this SKILL.md's actual installed folder, not a hard-coded repository
 path. Explicit Pro/research requests authorize the relevant query within their
 scope; reuse existing approvals and call budgets instead of asking again.
 
-Current status: a browser-free GPT Pro request completed successfully on
-2026-09-05 at 15:32 UTC, using commit `054c3f6`. The Deno helper generated fresh
-requirements, submitted once, followed the background handoff, and returned the
-exact requested answer. The saved conversation identifies `gpt-6-pro`,
-`finished_successfully`, a final channel with `end_turn: true`, and the
-submitted user message as its ancestor. No browser runtime was used.
-
-The confirmed corrections derive observation from the integrity cookie, apply
-integrity response updates with compare-and-set ordering, preserve an approved
-web-session snapshot, and use the SDK public `getEnforcementToken` method
-instead of its unframed low-level proof generator. The timezone-offset sign also
-matches the browser. Twenty-eight offline tests pass. See
-[sanitized findings](diagnostics/README.md) for the controlled failures and
-successful acceptance. This is a working experimental path, not proof of
-long-term reliability across SDK changes or session expiry.
+Current status: working experimental integration, verified on 2026-09-05. The
+normal CLI and two concurrent jobs completed successfully. An official
+GitHub-installed copy ran outside the repository and completed research with
+verified `gpt-6-pro` metadata, exact message matching, and three `web.run`
+calls. All 28 offline tests pass. See
+[sanitized findings](diagnostics/README.md) for the earlier failures,
+corrections, and acceptance evidence. Six-hour waits are covered by
+simulated-clock tests, not a six-hour live soak test. Session refresh remains
+manual and private SDK changes can break the integration.
 
 The helper persists a private job record before submission and saves the
 conversation ID as soon as it arrives. Retrieval polls for up to six hours after
@@ -63,11 +57,12 @@ for complete commands and recovery semantics. Job records include prompts and
 answers: keep `.gpt-pro-jobs/` owner-only and Git-ignored. They never contain
 authentication or challenge data.
 
-Run the helper with the user's prompt as arguments, or pipe the prompt on stdin:
+Set `SKILL_DIR` to this skill's actual installed directory. Run the helper with
+the user's prompt as arguments, or pipe the prompt on stdin:
 
 ```sh
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
-  <installed-skill-directory>/scripts/ask-gpt-pro.ts "<prompt>"
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" "<prompt>"
 ```
 
 The helper reads exactly one `CHATGPT_WEB_SESSION` entry from the private
@@ -107,5 +102,5 @@ checks are complete.
 For local verification, run:
 
 ```sh
-deno test --allow-read --allow-write <installed-skill-directory>/tests/
+deno test --allow-read --allow-write "$SKILL_DIR/tests/"
 ```

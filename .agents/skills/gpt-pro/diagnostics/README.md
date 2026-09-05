@@ -1,8 +1,11 @@
 # Browser-free submission diagnosis
 
-Status at 15:32 UTC on 2026-09-05: browser-free acceptance passed at commit
-`054c3f6`. One model submission returned the exact completed answer, with
-`gpt-6-pro` metadata and verified answer-to-message matching.
+Current status (2026-09-05): normal CLI, concurrent jobs, and installed-copy
+research acceptance passed. The repository is public and the runtime/package
+changes are merged. Private state now lives outside the installation directory.
+All 28 tests pass; no six-hour live soak test or automatic session refresh is
+claimed. The sections below preserve the chronological diagnostic evidence;
+older credential paths and failed acceptance results describe earlier revisions.
 
 Canonical checkout: `/Users/nv/repos/0x4007/gpt-pro-skill`, branch
 `codex/diagnose-browser-free-pro`, based on `0818c19`. No Obscura is involved.
@@ -240,7 +243,7 @@ then succeeded. The framing mismatch is established by browser and SDK source,
 but this sequence does not separately isolate every correction's necessity.
 Manual snapshot refresh and SDK-interface fragility remain concrete limitations.
 
-## Verification and delivery boundary
+## Verification at the first successful acceptance
 
 Type checking and all seventeen tests passed, including integrity observation
 and state rotation, no-retry tracing, private evidence modes, and existing
@@ -253,10 +256,10 @@ deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/
 deno fmt --check .agents/skills/gpt-pro/
 ```
 
-The corrected runtime has passed real completed-answer acceptance. Local tests,
-type checking, formatting, and Codex review passed for the implementation. Final
-delivery can now leave draft and merge after the documentation review and
-repository checks. No CI or deployment checks are configured for this
+The corrected runtime passed real completed-answer acceptance. Local tests, type
+checking, formatting, and Codex review passed for that implementation; PR #1 was
+subsequently merged. Later sections record the normal-command, concurrent-job,
+and installed-copy checks. No CI or deployment checks are configured for this
 repository.
 
 ## Normal skill command repeat and publication audit
