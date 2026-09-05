@@ -7,7 +7,7 @@ Use this skill only when the user asks for a GPT Pro answer or explicitly
 invokes `$gpt-pro`. It sends the requested prompt to ChatGPT's private web
 backend through Deno; it does not open or control a browser.
 
-Current status: experimental; browser-free end-to-end acceptance is pending. The
+Current status: experimental; browser-free end-to-end acceptance failed. The
 approved four-submission diagnostic batch established that Deno can complete a
 fresh browser-generated request, while the original helper using Codex
 credentials returned HTTP 403. Two confirmed protocol defects were corrected:
@@ -21,6 +21,17 @@ requests with HTTP 200, received four integrity updates, and produced an
 observation that matched its current cookie. A diagnostic transport guard
 stopped before model submission. This is preparation evidence, not a completed
 GPT Pro answer. See [sanitized findings](diagnostics/README.md).
+
+The user approved one further acceptance submission after the credential
+cutover. At 14:08 UTC on 2026-09-05, the original Deno CLI at commit `79d4873`
+generated fresh requirements and a message ID, then received HTTP 403: "Unusual
+activity has been detected from your device." It exited with code 1 and returned
+no answer. No browser runtime was used, and no retry was made. Successful
+preparation and matching integrity state are therefore insufficient for
+acceptance. The remaining request-generation or Sentinel behavior is unresolved;
+this does not establish that a browser-free solution is impossible. Do not spend
+another submission without a new evidence-backed correction and explicit
+approval.
 
 The helper polls the conversation after a background handoff for up to 30
 minutes and returns only a completed final answer belonging to the submitted

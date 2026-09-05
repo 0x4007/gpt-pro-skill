@@ -1,8 +1,8 @@
 # Browser-free submission diagnosis
 
-Status at 14:03 UTC on 2026-09-05: incomplete. The web-session credential
-cutover passes live preparation; model acceptance has not been tested. The four
-approved diagnostic submissions are exhausted.
+Status at 14:08 UTC on 2026-09-05: incomplete. The web-session credential
+cutover passes live preparation, but its separately approved model acceptance
+submission returned HTTP 403. All five approved submissions have been used.
 
 Canonical checkout: `/Users/nv/repos/0x4007/gpt-pro-skill`, branch
 `codex/diagnose-browser-free-pro`, based on `0818c19`. No Obscura is involved.
@@ -158,6 +158,25 @@ This resolves the observed missing-state preparation problem. It does not prove
 that credentials were the sole 403 cause or that the Sentinel VM-generated
 request will be accepted. The next acceptance test must use fresh requirements
 and a new message ID; never reuse the preflight's unsent requirements.
+
+## Web-session acceptance result
+
+After the guarded preflight and local review, the user explicitly approved one
+fresh acceptance submission. At 14:08 UTC on 2026-09-05, commit `79d4873` ran
+through the original CLI with prompt
+`Reply with exactly GPT_PRO_ACCEPTANCE_20260905`. The helper loaded the approved
+repository web-session snapshot, generated fresh requirements and a message ID,
+and reached conversation submission. The backend returned HTTP 403 with "Unusual
+activity has been detected from your device." The process exited 1; no answer
+was returned. No browser runtime was involved and no retry was made. The private
+CLI log is `.diagnostics/acceptance-web-session.log`.
+
+The approved web-session source resolves the observed missing-state preparation
+problem but does not establish submission acceptance. The controlled B result
+still proves that Deno transport can complete a browser-generated request.
+Remaining helper request generation, Sentinel VM behavior, and other session
+bindings are unresolved. Do not claim a single root cause or that browser-free
+implementation is impossible. No further model submission is authorized.
 
 ## Verification and delivery boundary
 
