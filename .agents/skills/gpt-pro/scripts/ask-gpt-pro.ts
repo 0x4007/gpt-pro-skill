@@ -1,4 +1,5 @@
 import { createContext, runInContext } from "node:vm";
+import { ensurePrivateState, stateDirectory } from "./state.ts";
 import { JobStore, POLL_WINDOW_MS, type ProJob } from "./jobs.ts";
 
 type JsonObject = Record<string, any>;
@@ -179,7 +180,7 @@ export function parseWebSession(envText: string): WebSession {
   );
   if (lines.length !== 1) {
     throw new Error(
-      "Expected one CHATGPT_WEB_SESSION entry in repository .env",
+      "Expected one CHATGPT_WEB_SESSION entry in state-directory .env",
     );
   }
   let encoded = lines[0].slice("CHATGPT_WEB_SESSION=".length).trim();
@@ -256,14 +257,16 @@ export function parseWebSession(envText: string): WebSession {
   }
   if ((expiry as number) * 1000 <= Date.now()) {
     throw new Error(
-      "ChatGPT web session expired; replace the repository .env snapshot",
+      "ChatGPT web session expired; replace the state-directory .env snapshot",
     );
   }
   return session;
 }
 
-export async function loadWebSession(): Promise<WebSession> {
-  const path = new URL("../../../../.env", import.meta.url);
+export async function loadWebSession(
+  directory = stateDirectory(),
+): Promise<WebSession> {
+  const path = new URL(".env", directory);
   let text: string;
   try {
     const stat = await Deno.stat(path);
@@ -273,10 +276,80 @@ export async function loadWebSession(): Promise<WebSession> {
     text = await Deno.readTextFile(path);
   } catch {
     throw new Error(
-      "Could not read owner-only repository .env web session (mode 0600 required)",
+      "Could not read owner-only state-directory .env web session (mode 0600 required)",
     );
   }
   return parseWebSession(text);
+}
+
+export function parseSessionImport(text: string): WebSession {
+  if (/^CHATGPT_WEB_SESSION=/m.test(text)) return parseWebSession(text);
+  if (text.trimStart().startsWith("{")) {
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      throw new Error("Invalid web-session JSON import");
+    }
+    return parseWebSession("CHATGPT_WEB_SESSION=" + JSON.stringify(value));
+  }
+  // Accept DevTools Copy request headers, never execute copied cURL or JS.
+  const headers: Record<string, string> = {};
+  let accessToken = "", cookie = "";
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || /^(GET|POST) \S+ HTTP\/[\d.]+$/.test(line)) continue;
+    const match = /^([^:]+):\s*(.*)$/.exec(line);
+    if (!match) {
+      if (/^:(authority|method|path|scheme):/.test(line)) {
+        if (
+          line.startsWith(":authority:") &&
+          line.slice(11).trim() !== "chatgpt.com"
+        ) throw new Error("Import must come from chatgpt.com");
+        continue;
+      }
+      throw new Error(
+        "Expected copied request headers or a web-session JSON object",
+      );
+    }
+    const name = match[1].toLowerCase().trim(), value = match[2];
+    if (name === "authorization") {
+      if (accessToken || !value.startsWith("Bearer ")) {
+        throw new Error("Invalid imported authorization header");
+      }
+      accessToken = value.slice(7);
+    } else if (name === "cookie") {
+      if (cookie) throw new Error("Duplicate imported Cookie header");
+      cookie = value;
+    } else if (WEB_HEADERS.has(name)) headers[name] = value;
+    else if (
+      (name === "host" && value !== "chatgpt.com") ||
+      (name === "origin" && value !== CHATGPT_ORIGIN)
+    ) throw new Error("Import must come from chatgpt.com");
+  }
+  return parseWebSession(
+    "CHATGPT_WEB_SESSION=" + JSON.stringify({ accessToken, cookie, headers }),
+  );
+}
+
+export async function importWebSession(
+  text: string,
+  directory: URL,
+): Promise<void> {
+  const session = parseSessionImport(text);
+  await ensurePrivateState(directory);
+  const temporary = new URL(".auth-" + crypto.randomUUID() + ".tmp", directory);
+  const encoded = JSON.stringify(session).replaceAll("'", "\\u0027");
+  await Deno.writeTextFile(
+    temporary,
+    "CHATGPT_WEB_SESSION='" + encoded + "'\n",
+    { mode: 0o600, createNew: true },
+  );
+  try {
+    await Deno.rename(temporary, new URL(".env", directory));
+  } catch (error) {
+    await Deno.remove(temporary);
+    throw error;
+  }
 }
 
 export class ChatSession {
@@ -1370,7 +1443,7 @@ export async function submitJob(
   store = new JobStore(),
   onCreated?: (job: ProJob) => void,
 ): Promise<ProJob> {
-  const auth = await loadWebSession();
+  const auth = await loadWebSession(new URL("../", store.directory));
   const job = await store.create(prompt, await accountIdentity(auth));
   onCreated?.(job);
   return await store.withLock(job.id, async (current) => {
@@ -1413,7 +1486,7 @@ export async function resultForJob(
           "); do not resubmit automatically",
       );
     }
-    const auth = await loadWebSession();
+    const auth = await loadWebSession(new URL("../", store.directory));
     if (await accountIdentity(auth) !== job.account) {
       throw new Error("Web-session account does not match this job");
     }
@@ -1425,13 +1498,16 @@ export async function resultForJob(
   });
 }
 
-export async function run(prompt: string): Promise<string> {
+export async function run(
+  prompt: string,
+  store = new JobStore(),
+): Promise<string> {
   const job = await submitJob(
     prompt,
-    undefined,
+    store,
     (job) => console.error("GPT Pro job: " + job.id),
   );
-  return await resultForJob(job.id);
+  return await resultForJob(job.id, store);
 }
 
 function jobSummary(job: ProJob) {
@@ -1450,12 +1526,51 @@ function jobSummary(job: ProJob) {
 }
 
 export async function main(args: string[]): Promise<void> {
-  const store = new JobStore();
+  let directory: URL | undefined;
+  if (args[0] === "--state-dir") {
+    if (!args[1]) throw new Error("--state-dir requires an absolute path");
+    directory = stateDirectory(args[1]);
+    args = args.slice(2);
+  }
   const command = args[0];
   if (command === "--help") {
     console.log(
-      "Usage: ask-gpt-pro.ts [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.",
+      "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.",
     );
+    return;
+  }
+  directory ??= stateDirectory();
+  const store = new JobStore(new URL(".gpt-pro-jobs/", directory));
+  if (command === "--auth-import") {
+    if (args.length !== 2) {
+      throw new Error(
+        "--auth-import requires a private file path or - for stdin",
+      );
+    }
+    const text = args[1] === "-"
+      ? await new Response(Deno.stdin.readable).text()
+      : await Deno.readTextFile(args[1]);
+    await importWebSession(text, directory);
+    console.log(JSON.stringify({ status: "imported", modelSubmission: false }));
+    return;
+  }
+  if (command === "--auth-check") {
+    if (args.length !== 1) throw new Error("--auth-check takes no arguments");
+    const session = new ChatSession(await loadWebSession(directory));
+    const response = await session.fetch(
+      CHATGPT_ORIGIN + "/backend-api/models",
+      { signal: AbortSignal.timeout(30000) },
+    );
+    await response.body?.cancel();
+    console.log(
+      JSON.stringify({
+        authenticated: response.ok,
+        httpStatus: response.status,
+        submissionEligibility: "not_tested",
+        modelSubmission: false,
+      }),
+    );
+    if (!response.ok) Deno.exitCode = 1;
     return;
   }
   if (command === "--jobs") {
@@ -1513,7 +1628,7 @@ export async function main(args: string[]): Promise<void> {
       (job) => console.error("GPT Pro job: " + job.id),
     );
     console.log(JSON.stringify(jobSummary(job)));
-  } else console.log(await run(prompt));
+  } else console.log(await run(prompt, store));
 }
 
 if (import.meta.main) {

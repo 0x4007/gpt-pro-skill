@@ -1,0 +1,12 @@
+{
+  "name": "gpt-pro-research",
+  "version": "0.1.0",
+  "description": "Browser-free GPT Pro requests and durable long-running research jobs for local Codex agents.",
+  "repository": "https://github.com/0x4007/gpt-pro-skill",
+  "skills": "./.agents/skills/",
+  "interface": {
+    "displayName": "GPT Pro Research",
+    "shortDescription": "Durable GPT Pro research jobs through Deno",
+    "category": "Productivity"
+  }
+}

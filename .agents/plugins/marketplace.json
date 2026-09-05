@@ -1,0 +1,21 @@
+{
+  "name": "gpt-pro-skills",
+  "interface": {
+    "displayName": "GPT Pro Skills"
+  },
+  "plugins": [
+    {
+      "name": "gpt-pro-research",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/0x4007/gpt-pro-skill.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
