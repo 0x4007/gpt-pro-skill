@@ -1,9 +1,36 @@
 import {
   answerForMessage,
+  clientObservation,
   completedAnswer,
   parseSseText,
   redactSensitiveText,
 } from "../scripts/ask-gpt-pro.ts";
+
+Deno.test("client observation reports the actual integrity cookie state", () => {
+  const state = "ois1.example.ABCDEFGHIJKLMNOP.signature";
+  const fixtures = [
+    ["oai-did=device", "v1.s.m"],
+    ["__Secure-oai-is=", "v1.s.i"],
+    ["__Secure-oai-is=%invalid", "v1.s.i"],
+    ["__Secure-oai-is=ois1.example.short.signature", "v1.s.i"],
+    [`__Secure-oai-is=${state}.extra`, "v1.s.i"],
+    [`__Secure-oai-is=${state}${"a".repeat(2048)}`, "v1.s.i"],
+    [`__Secure-oai-is=${state}`, "v1.s.p.ABCDEFGHIJKLMNOP"],
+    [
+      `oai-did=device; __Secure-oai-is=${state.replaceAll(".", "%2E")}`,
+      "v1.s.p.ABCDEFGHIJKLMNOP",
+    ],
+    [
+      `__Secure-oai-is=${state}; __Secure-oai-is=${state}`,
+      "v1.s.d.ABCDEFGHIJKLMNOP",
+    ],
+  ];
+  for (const [cookie, expected] of fixtures) {
+    if (clientObservation(cookie) !== expected) {
+      throw new Error(`Incorrect observation: expected ${expected}`);
+    }
+  }
+});
 
 Deno.test("background answer must be final, complete, and belong to the requested turn", () => {
   const conversation = {
