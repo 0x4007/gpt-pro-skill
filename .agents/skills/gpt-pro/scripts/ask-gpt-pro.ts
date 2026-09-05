@@ -22,6 +22,11 @@ function randomUuid(): string {
   return crypto.randomUUID();
 }
 
+function isIntegrityState(value: string): boolean {
+  return value.length <= 2048 && value.trim() === value &&
+    /^ois1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
+}
+
 export function clientObservation(cookieHeader: string): string {
   const values = cookieHeader.split(";").map((part) => part.trim())
     .filter((part) => part.startsWith("__Secure-oai-is="))
@@ -34,8 +39,7 @@ export function clientObservation(cookieHeader: string): string {
     return "v1.s.i";
   }
   if (
-    state.length > 2048 ||
-    !/^ois1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]+$/.test(state)
+    !isIntegrityState(state) || !/^[A-Za-z0-9_-]{16}$/.test(state.split(".")[2])
   ) return "v1.s.i";
   // The nonce describes observed integrity state; it is not a random trace ID.
   return `v1.s.${values.length > 1 ? "d" : "p"}.${state.split(".")[2]}`;
@@ -100,7 +104,18 @@ class CookieJar {
     this.#values.set(name, value);
   }
 
-  ingest(response: Response): void {
+  integrityState(): string | null {
+    try {
+      const value = decodeURIComponent(
+        this.#values.get("__Secure-oai-is") ?? "",
+      );
+      return isIntegrityState(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  ingest(response: Response, expectedIntegrityState: string | null): void {
     const getSetCookie = (
       response.headers as Headers & { getSetCookie?: () => string[] }
     ).getSetCookie;
@@ -111,6 +126,15 @@ class CookieJar {
       if (separator > 0) {
         this.set(first.slice(0, separator), first.slice(separator + 1));
       }
+    }
+    const update = response.headers.get("x-oai-is-update");
+    // Match the browser's compare-and-set rule: a late response must not
+    // overwrite state already rotated by another response or Set-Cookie.
+    if (
+      update !== null && isIntegrityState(update) &&
+      this.integrityState() === expectedIntegrityState
+    ) {
+      this.set("__Secure-oai-is", update);
     }
   }
 
@@ -153,7 +177,7 @@ async function loadAuth(): Promise<{ accessToken: string; accountId: string }> {
   return { accessToken, accountId };
 }
 
-class ChatSession {
+export class ChatSession {
   readonly deviceId = randomUuid();
   readonly sessionId = randomUuid();
   readonly cookies = new CookieJar();
@@ -198,8 +222,9 @@ class ChatSession {
     const cookie = this.cookies.header();
     if (cookie) headers.set("cookie", cookie);
 
+    const expectedIntegrityState = this.cookies.integrityState();
     const response = await fetch(input, { ...init, headers });
-    this.cookies.ingest(response);
+    this.cookies.ingest(response, expectedIntegrityState);
     return response;
   }
 }

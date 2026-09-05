@@ -24,6 +24,16 @@ comparison. Browser credentials and interception code remain local diagnostics
 and are not part of the shipped runtime. See
 [sanitized findings](diagnostics/README.md).
 
+The helper also processes `X-OAI-IS-Update` response headers and rejects stale
+updates using the browser's compare-and-set rule. Twelve offline tests pass. A
+subsequent live preflight stopped before submission: all five preparation
+requests completed with existing Codex authentication, but none returned an
+integrity-state update. The captured web client's missing-state recovery allows
+the browser token's OAuth client and excludes the Codex token's client. Both
+tokens identify the same account and stable user. Initial state acquisition with
+the permitted credential source remains unresolved; another paid submission is
+not yet justified by this correction.
+
 The helper polls the conversation after a background handoff for up to 30
 minutes and returns only a completed final answer belonging to the submitted
 message. Live test B retrieved its completed answer through Deno; focused tests

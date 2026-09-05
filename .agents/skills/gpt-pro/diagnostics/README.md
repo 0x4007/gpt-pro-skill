@@ -97,11 +97,51 @@ exposing the existing functions for diagnosis; regenerate it after a helper
 correction. Browser credentials and interception code must never become a
 credential source for the shipped runtime.
 
+## Integrity-state lifecycle follow-up
+
+Read-only analysis of saved C evidence found valid `X-OAI-IS-Update` headers on
+the SDK bootstrap, requirements preparation, and finalization responses. Each
+specified state and a nonce different from what the helper sent. The old helper
+processed only Set-Cookie, so it discarded those updates. This is a separate,
+confirmed protocol defect.
+
+The helper now validates response updates and applies them only when the current
+cookie state still matches the state captured before that request. This matches
+the browser's compare-and-set behavior. Set-Cookie is processed first, matching
+the browser's response ordering. Invalid updates are ignored; late responses
+cannot overwrite a newer integrity-state rotation. Synthetic fixtures cover the
+sequence from SDK bootstrap through conversation preparation to submission,
+out-of-order completion, ordinary cookies, and invalid state.
+
+At approximately 13:35 UTC, a live preflight with the original Codex credential
+source completed SDK bootstrap, SDK retrieval, requirements preparation,
+requirements finalization, and conversation preparation. None of the five
+responses supplied `X-OAI-IS-Update`. The final request would still have used
+`v1.s.m`. The diagnostic transport blocked the conversation submission before
+sending it. No model submission was made and no additional submission allowance
+was consumed. Private evidence is in `http-5c8e0908f5649c95` under
+`.diagnostics/`.
+
+The captured browser recovery coordinator checks an OAuth-client allowlist
+before attempting missing-state recovery through web token refresh. Comparing
+claims locally, without printing tokens or identifiers, showed that the captured
+browser token's client is allowed and the current Codex token's client is not.
+Both have matching account IDs and stable ChatGPT user IDs. This establishes a
+credential-path difference, not a different account or proof of a server-wide
+prohibition on Codex credentials. It also does not prove that missing integrity
+state is the sole cause of the 403.
+
+The next diagnosis is initial state acquisition and submission eligibility with
+the existing credential source. Do not spend another submission testing only
+update handling when that source receives no updates. Changing the credential
+source requires user approval under the plan; browser diagnostic credentials
+remain excluded from the runtime.
+
 ## Verification and delivery boundary
 
-Type checking and all eight tests passed, including the integrity observation
-regression, no-retry tracing, private evidence modes, and existing background
-answer matching. Code and Markdown formatting pass.
+Type checking and all twelve tests passed, including integrity observation and
+state rotation, no-retry tracing, private evidence modes, and existing
+background answer matching. Code and Markdown formatting pass.
 
 ```sh
 deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts \
