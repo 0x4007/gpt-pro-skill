@@ -1,0 +1,5 @@
+*.har
+.env
+.env.*
+auth.json
+.DS_Store
