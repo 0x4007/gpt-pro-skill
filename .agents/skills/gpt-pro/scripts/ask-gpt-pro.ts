@@ -4,12 +4,6 @@ type JsonObject = Record<string, any>;
 
 const CHATGPT_ORIGIN = "https://chatgpt.com";
 const MODEL = "gpt-6-pro";
-const CLIENT_BUILD = "10328501";
-const CLIENT_VERSION = "prod-0284065d19c970cfd6e970c173150f4d17d52d73";
-const USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
-
 const MODEL_RESPONSE_CONTRACTS = [
   {
     id: "photo_upload_action.v1",
@@ -98,16 +92,25 @@ function withTimeout<T>(
 }
 
 class CookieJar {
-  #values = new Map<string, string>();
+  #values: Array<[string, string]> = [];
+
+  seed(header: string): void {
+    this.#values = header.split(";").map((part) => {
+      const item = part.trim();
+      const separator = item.indexOf("=");
+      return [item.slice(0, separator), item.slice(separator + 1)];
+    });
+  }
 
   set(name: string, value: string): void {
-    this.#values.set(name, value);
+    this.#values = this.#values.filter(([key]) => key !== name);
+    this.#values.push([name, value]);
   }
 
   integrityState(): string | null {
     try {
       const value = decodeURIComponent(
-        this.#values.get("__Secure-oai-is") ?? "",
+        this.#values.find(([name]) => name === "__Secure-oai-is")?.[1] ?? "",
       );
       return isIntegrityState(value) ? value : null;
     } catch {
@@ -145,85 +148,178 @@ class CookieJar {
   }
 }
 
-interface AuthDocument {
-  tokens?: {
-    access_token?: unknown;
-    account_id?: unknown;
-  };
+export interface WebSession {
+  accessToken: string;
+  cookie: string;
+  headers: Record<string, string>;
 }
 
-async function loadAuth(): Promise<{ accessToken: string; accountId: string }> {
-  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-  const codexHome = Deno.env.get("CODEX_HOME") ??
-    (home ? `${home}/.codex` : null);
-  if (!codexHome) throw new Error("HOME or CODEX_HOME was not available");
+const WEB_HEADERS = new Set([
+  "accept-language",
+  "oai-client-build-number",
+  "oai-client-version",
+  "oai-device-id",
+  "oai-language",
+  "oai-session-id",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-model",
+  "sec-ch-ua-platform",
+  "sec-ch-ua-platform-version",
+  "sec-gpc",
+  "user-agent",
+  "chatgpt-account-id",
+]);
 
-  const authPath = `${codexHome}/auth.json`;
-  let auth: AuthDocument;
-  try {
-    auth = JSON.parse(await Deno.readTextFile(authPath)) as AuthDocument;
-  } catch {
-    throw new Error(`Could not read ${authPath}`);
+export function parseWebSession(envText: string): WebSession {
+  // This is one approved JSON credential field, not a general dotenv loader.
+  const lines = envText.split(/\r?\n/).filter((line) =>
+    /^CHATGPT_WEB_SESSION=/.test(line)
+  );
+  if (lines.length !== 1) {
+    throw new Error(
+      "Expected one CHATGPT_WEB_SESSION entry in repository .env",
+    );
   }
+  let encoded = lines[0].slice("CHATGPT_WEB_SESSION=".length).trim();
+  if (encoded.startsWith("'") && encoded.endsWith("'")) {
+    encoded = encoded.slice(1, -1);
+  }
+  let session: WebSession;
+  try {
+    const value = assertRecord(JSON.parse(encoded), "Web session");
+    const headers = assertRecord(value.headers, "Web session headers");
+    const clean: Record<string, string> = {};
+    for (const [name, field] of Object.entries(headers)) {
+      if (
+        !WEB_HEADERS.has(name) || typeof field !== "string" ||
+        /[\r\n]/.test(field)
+      ) throw new Error();
+      new Headers({ [name]: field });
+      clean[name] = field;
+    }
+    for (
+      const name of [
+        "oai-device-id",
+        "oai-session-id",
+        "oai-client-build-number",
+        "oai-client-version",
+        "user-agent",
+        "oai-language",
+        "accept-language",
+      ]
+    ) {
+      if (!clean[name]?.trim()) throw new Error();
+    }
+    const accessToken = requiredString(value.accessToken, "Token");
+    const cookie = requiredString(value.cookie, "Cookie");
+    if (/[\r\n\s]/.test(accessToken) || /[\r\n]/.test(cookie)) {
+      throw new Error();
+    }
+    new Headers({ authorization: "Bearer " + accessToken, cookie });
+    const cookies = new Map<string, string>();
+    for (const part of cookie.split(";")) {
+      const item = part.trim();
+      const split = item.indexOf("=");
+      const name = item.slice(0, split);
+      if (
+        split <= 0 ||
+        (cookies.has(name) &&
+          (name === "oai-did" || name === "__Secure-oai-is"))
+      ) throw new Error();
+      cookies.set(name, item.slice(split + 1));
+    }
+    if (
+      decodeURIComponent(cookies.get("oai-did") ?? "") !==
+        clean["oai-device-id"] ||
+      !clientObservation(cookie).startsWith("v1.s.p.")
+    ) throw new Error();
+    session = { accessToken, cookie, headers: clean };
+  } catch {
+    // Parser and Headers errors can contain the credential value.
+    throw new Error(
+      "Invalid CHATGPT_WEB_SESSION structure, headers, or cookie binding",
+    );
+  }
+  let expiry: unknown;
+  try {
+    const parts = session.accessToken.split(".");
+    if (parts.length !== 3) throw new Error();
+    expiry =
+      JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))).exp;
+    if (typeof expiry !== "number" || !Number.isFinite(expiry)) {
+      throw new Error();
+    }
+  } catch {
+    throw new Error("Invalid web-session token expiry");
+  }
+  if ((expiry as number) * 1000 <= Date.now()) {
+    throw new Error(
+      "ChatGPT web session expired; replace the repository .env snapshot",
+    );
+  }
+  return session;
+}
 
-  const accessToken = requiredString(
-    auth.tokens?.access_token,
-    "ChatGPT access token",
-  );
-  const accountId = requiredString(
-    auth.tokens?.account_id,
-    "ChatGPT account id",
-  );
-  return { accessToken, accountId };
+export async function loadWebSession(): Promise<WebSession> {
+  const path = new URL("../../../../.env", import.meta.url);
+  let text: string;
+  try {
+    const stat = await Deno.stat(path);
+    if (stat.mode !== null && (stat.mode & 0o077) !== 0) {
+      throw new Error();
+    }
+    text = await Deno.readTextFile(path);
+  } catch {
+    throw new Error(
+      "Could not read owner-only repository .env web session (mode 0600 required)",
+    );
+  }
+  return parseWebSession(text);
 }
 
 export class ChatSession {
-  readonly deviceId = randomUuid();
-  readonly sessionId = randomUuid();
+  readonly deviceId: string;
+  readonly sessionId: string;
   readonly cookies = new CookieJar();
   readonly browserHeaders: Record<string, string>;
+  private readonly accessToken: string;
 
-  constructor(
-    private readonly accessToken: string,
-    private readonly accountId: string,
-  ) {
-    this.cookies.set("oai-did", this.deviceId);
+  constructor(session: WebSession) {
+    this.accessToken = session.accessToken;
+    this.deviceId = session.headers["oai-device-id"];
+    this.sessionId = session.headers["oai-session-id"];
+    this.cookies.seed(session.cookie);
     this.browserHeaders = {
-      "accept-language": "en-US,en;q=0.9",
+      ...session.headers,
       "cache-control": "no-cache",
-      "oai-client-build-number": CLIENT_BUILD,
-      "oai-client-version": CLIENT_VERSION,
-      "oai-device-id": this.deviceId,
-      "oai-language": "en-US",
-      "oai-session-id": this.sessionId,
       origin: CHATGPT_ORIGIN,
       pragma: "no-cache",
-      referer: `${CHATGPT_ORIGIN}/`,
-      "sec-ch-ua": '"Not=A?Brand";v="99", "Brave";v="151", "Chromium";v="151"',
-      "sec-ch-ua-mobile": "?0",
-      "sec-ch-ua-model": '""',
-      "sec-ch-ua-platform": '"macOS"',
-      "sec-ch-ua-platform-version": '"26.6.1"',
+      referer: CHATGPT_ORIGIN + "/",
       "sec-fetch-dest": "empty",
       "sec-fetch-mode": "cors",
       "sec-fetch-site": "same-origin",
-      "sec-gpc": "1",
-      "user-agent": USER_AGENT,
     };
   }
 
   async fetch(input: string | URL, init: RequestInit = {}): Promise<Response> {
+    if (new URL(input).origin !== CHATGPT_ORIGIN) {
+      throw new Error("Web-session requests must stay on the ChatGPT origin");
+    }
     const headers = new Headers(init.headers);
     for (const [name, value] of Object.entries(this.browserHeaders)) {
       if (!headers.has(name)) headers.set(name, value);
     }
     headers.set("authorization", `Bearer ${this.accessToken}`);
-    headers.set("chatgpt-account-id", this.accountId);
     const cookie = this.cookies.header();
     if (cookie) headers.set("cookie", cookie);
 
     const expectedIntegrityState = this.cookies.integrityState();
-    const response = await fetch(input, { ...init, headers });
+    const response = await fetch(input, {
+      ...init,
+      headers,
+      redirect: "error",
+    });
     this.cookies.ingest(response, expectedIntegrityState);
     return response;
   }
@@ -409,7 +505,7 @@ function makeWindow(
   window.performance = performanceShim;
   window.crypto = crypto;
   window.navigator = {
-    userAgent: USER_AGENT,
+    userAgent: session.browserHeaders["user-agent"],
     language: "en-US",
     languages: ["en-US", "en"],
     hardwareConcurrency: 8,
@@ -1033,9 +1129,8 @@ function conversationBody(prompt: string, messageId: string): JsonObject {
   };
 }
 
-async function run(prompt: string): Promise<string> {
-  const { accessToken, accountId } = await loadAuth();
-  const session = new ChatSession(accessToken, accountId);
+export async function run(prompt: string): Promise<string> {
+  const session = new ChatSession(await loadWebSession());
   const sentinel = await SentinelHarness.create(session);
   const requirements = await sentinel.chatRequirements();
   const traceId = randomUuid();

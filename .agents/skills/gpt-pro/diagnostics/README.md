@@ -1,7 +1,8 @@
 # Browser-free submission diagnosis
 
-Status at 13:02 UTC on 2026-09-05: incomplete. The original Deno interface still
-returns HTTP 403. The four approved diagnostic submissions are exhausted.
+Status at 14:03 UTC on 2026-09-05: incomplete. The web-session credential
+cutover passes live preparation; model acceptance has not been tested. The four
+approved diagnostic submissions are exhausted.
 
 Canonical checkout: `/Users/nv/repos/0x4007/gpt-pro-skill`, branch
 `codex/diagnose-browser-free-pro`, based on `0818c19`. No Obscura is involved.
@@ -94,8 +95,9 @@ evidence. No further submission is authorized by this batch.
 The ignored `.diagnostics/auth-probe.ts` demonstrated capture with the existing
 helper session. `.diagnostics/helper.ts` is an earlier local source copy
 exposing the existing functions for diagnosis; regenerate it after a helper
-correction. Browser credentials and interception code must never become a
-credential source for the shipped runtime.
+correction. The original plan excluded browser diagnostic credentials from the
+runtime. The user subsequently approved the separate repository .env web-session
+source described below. HAR readers and interception code remain excluded.
 
 ## Integrity-state lifecycle follow-up
 
@@ -131,15 +133,35 @@ credential-path difference, not a different account or proof of a server-wide
 prohibition on Codex credentials. It also does not prove that missing integrity
 state is the sole cause of the 403.
 
-The next diagnosis is initial state acquisition and submission eligibility with
-the existing credential source. Do not spend another submission testing only
-update handling when that source receives no updates. Changing the credential
-source requires user approval under the plan; browser diagnostic credentials
-remain excluded from the runtime.
+## Approved web-session credential cutover
+
+The user approved a separate `CHATGPT_WEB_SESSION` JSON credential in the
+repository-root `.env`. It replaces Codex authentication with a consistent web
+bearer, cookies, device/session IDs, and captured client headers. The source is
+owner-only and Git-ignored. The runtime neither reads diagnostic artifacts nor
+opens a browser. It validates the snapshot and token expiry, restricts
+credential transport to the ChatGPT origin, and rejects redirects. It does not
+refresh the snapshot automatically.
+
+Read-only validation found ordinary duplicate cookie names in the captured
+browser request. The cookie jar now preserves their order rather than dropping
+entries during initialization. Device and integrity cookie duplicates are
+rejected because they make the required binding ambiguous.
+
+At 14:03 UTC, the real exported helper completed five preparation requests
+through Deno, each with HTTP 200. Four responses returned integrity-state update
+headers, and the final observation matched the current integrity cookie. The
+transport guard blocked submission before sending it; zero model requests were
+made. Private trace: `.diagnostics/http-a6df0f311bf4af03`.
+
+This resolves the observed missing-state preparation problem. It does not prove
+that credentials were the sole 403 cause or that the Sentinel VM-generated
+request will be accepted. The next acceptance test must use fresh requirements
+and a new message ID; never reuse the preflight's unsent requirements.
 
 ## Verification and delivery boundary
 
-Type checking and all twelve tests passed, including integrity observation and
+Type checking and all fifteen tests passed, including integrity observation and
 state rotation, no-retry tracing, private evidence modes, and existing
 background answer matching. Code and Markdown formatting pass.
 
@@ -150,7 +172,7 @@ deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/
 deno fmt --check .agents/skills/gpt-pro/
 ```
 
-The focused correction is ready for review. Browser-free acceptance failed; keep
-the task incomplete and its PR in draft. Do not merge or describe these changes
-as a working GPT Pro fix. Further live diagnosis needs a new approved batch and
-must resolve the cookie/session comparison first.
+The focused correction is ready for review. The previous browser-free acceptance
+failed; keep the task incomplete and its PR in draft. Do not merge or describe
+these changes as a working GPT Pro fix. Further live diagnosis needs a new
+approved batch and must resolve the cookie/session comparison first.

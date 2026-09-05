@@ -7,32 +7,20 @@ Use this skill only when the user asks for a GPT Pro answer or explicitly
 invokes `$gpt-pro`. It sends the requested prompt to ChatGPT's private web
 backend through Deno; it does not open or control a browser.
 
-Current status: experimental and not working end to end. In the approved
-four-submission batch on 2026-09-05, a browser baseline completed and Deno
-successfully submitted a fresh browser-generated request with its browser
-session. A helper-generated request sent through the browser returned HTTP 403.
-The corrected helper, run through the original Deno command below with only
-existing Codex authentication, also returned HTTP 403, "Unusual activity has
-been detected from your device," at 13:02 UTC. It exited with code 1 and no
-answer. No rejected submission was retried. Quota consumption was not verified.
+Current status: experimental; browser-free end-to-end acceptance is pending. The
+approved four-submission diagnostic batch established that Deno can complete a
+fresh browser-generated request, while the original helper using Codex
+credentials returned HTTP 403. Two confirmed protocol defects were corrected:
+client observation now derives from the integrity cookie, and response integrity
+updates follow the browser's compare-and-set rule.
 
-The helper now derives its client-observation value from its actual
-integrity-state cookie instead of inventing a nonce and claiming state is
-present. This confirmed protocol correction is insufficient to fix submission.
-The remaining cause is unresolved; cookie rotation limits the controlled
-comparison. Browser credentials and interception code remain local diagnostics
-and are not part of the shipped runtime. See
-[sanitized findings](diagnostics/README.md).
-
-The helper also processes `X-OAI-IS-Update` response headers and rejects stale
-updates using the browser's compare-and-set rule. Twelve offline tests pass. A
-subsequent live preflight stopped before submission: all five preparation
-requests completed with existing Codex authentication, but none returned an
-integrity-state update. The captured web client's missing-state recovery allows
-the browser token's OAuth client and excludes the Codex token's client. Both
-tokens identify the same account and stable user. Initial state acquisition with
-the permitted credential source remains unresolved; another paid submission is
-not yet justified by this correction.
+The user then approved a separate web-session credential source. The helper now
+uses the repository-root .env snapshot described below, with no Codex auth
+fallback. A fresh Deno preparation check on 2026-09-05 completed all five
+requests with HTTP 200, received four integrity updates, and produced an
+observation that matched its current cookie. A diagnostic transport guard
+stopped before model submission. This is preparation evidence, not a completed
+GPT Pro answer. See [sanitized findings](diagnostics/README.md).
 
 The helper polls the conversation after a background handoff for up to 30
 minutes and returns only a completed final answer belonging to the submitted
@@ -42,14 +30,29 @@ also reject answers for a different message ID.
 Run the helper with the user's prompt as arguments, or pipe the prompt on stdin:
 
 ```sh
-deno run --allow-env --allow-read --allow-net=chatgpt.com \
+deno run --allow-read --allow-net=chatgpt.com \
   .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts "<prompt>"
 ```
 
-The helper reads the existing Codex ChatGPT authentication document from
-`$CODEX_HOME/auth.json`, or `~/.codex/auth.json` when `CODEX_HOME` is unset.
-Never print that file, access tokens, cookies, Sentinel values, or the HAR. The
-HAR is request evidence only and must not be sent or bundled with the skill.
+The helper reads exactly one `CHATGPT_WEB_SESSION` entry from the
+repository-root `.env`, resolved relative to the helper file, independent of the
+working directory. It contains single-quoted JSON with `accessToken`, `cookie`,
+and `headers`: the approved, consistent ChatGPT web-session snapshot. Required
+headers are `oai-device-id`, `oai-session-id`, `oai-client-build-number`,
+`oai-client-version`, `user-agent`, `oai-language`, and `accept-language`.
+Optional captured headers are `chatgpt-account-id`, `sec-gpc`, and the
+`sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-model`, `sec-ch-ua-platform`, and
+`sec-ch-ua-platform-version` client hints. Other headers are rejected. The
+device cookie must match the device header; a valid integrity cookie is
+required. Preserve ordinary duplicate cookies in capture order. Do not include
+captured Sentinel challenges or conversation bodies.
+
+Keep `.env` Git-ignored and owner-readable only (mode 0600). Never print tokens,
+cookies, Sentinel values, or raw evidence. The runtime uses no browser, HAR,
+interception code, new environment lookup, or automatic session refresh. The
+snapshot can expire or become invalid; the helper rejects expired tokens and
+stops on backend rejection. It restricts authenticated requests to
+`https://chatgpt.com` and rejects redirects.
 
 The helper fetches the current Sentinel SDK, runs its proof-of-work and
 Turnstile VM in a small Node-compatible VM shim, prepares and finalizes
@@ -66,5 +69,5 @@ checks are complete.
 For local verification, run:
 
 ```sh
-deno test --allow-read .agents/skills/gpt-pro/tests/ask-gpt-pro_test.ts
+deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/
 ```

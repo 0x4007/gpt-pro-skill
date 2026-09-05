@@ -10,7 +10,14 @@ const states = [
 
 Deno.test("HTTP lifecycle carries rotated integrity state into preparation and submission", async () => {
   const originalFetch = globalThis.fetch;
-  const session = new ChatSession("fixture-token", "fixture-account");
+  const session = new ChatSession({
+    accessToken: "fixture-token",
+    cookie: "oai-did=fixture-device",
+    headers: {
+      "oai-device-id": "fixture-device",
+      "oai-session-id": "fixture-session",
+    },
+  });
   const paths = [
     "/backend-api/sentinel/sdk.js",
     "/backend-api/sentinel/chat-requirements/prepare",
@@ -63,7 +70,14 @@ Deno.test("HTTP lifecycle carries rotated integrity state into preparation and s
 
 Deno.test("late integrity updates cannot overwrite a completed rotation", async () => {
   const originalFetch = globalThis.fetch;
-  const session = new ChatSession("fixture-token", "fixture-account");
+  const session = new ChatSession({
+    accessToken: "fixture-token",
+    cookie: "oai-did=fixture-device",
+    headers: {
+      "oai-device-id": "fixture-device",
+      "oai-session-id": "fixture-session",
+    },
+  });
   session.cookies.set("__Secure-oai-is", states[0]);
   const resolveResponses: Array<(response: Response) => void> = [];
   globalThis.fetch = () =>
@@ -101,7 +115,14 @@ Deno.test("late integrity updates cannot overwrite a completed rotation", async 
 
 Deno.test("invalid updates are ignored and Set-Cookie rotation wins over stale header", async () => {
   const originalFetch = globalThis.fetch;
-  const session = new ChatSession("fixture-token", "fixture-account");
+  const session = new ChatSession({
+    accessToken: "fixture-token",
+    cookie: "oai-did=fixture-device",
+    headers: {
+      "oai-device-id": "fixture-device",
+      "oai-session-id": "fixture-session",
+    },
+  });
   session.cookies.set("__Secure-oai-is", states[0]);
   try {
     for (
@@ -140,7 +161,14 @@ Deno.test("invalid stored state can bootstrap from a valid response update", asy
   const originalFetch = globalThis.fetch;
   try {
     for (const value of ["", "%invalid", `${states[0]}%0A`]) {
-      const session = new ChatSession("fixture-token", "fixture-account");
+      const session = new ChatSession({
+        accessToken: "fixture-token",
+        cookie: "oai-did=fixture-device",
+        headers: {
+          "oai-device-id": "fixture-device",
+          "oai-session-id": "fixture-session",
+        },
+      });
       session.cookies.set("__Secure-oai-is", value);
       if (session.cookies.integrityState() !== null) {
         throw new Error("Malformed stored state was accepted");
