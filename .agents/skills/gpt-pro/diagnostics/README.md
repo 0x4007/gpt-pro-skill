@@ -178,10 +178,44 @@ Remaining helper request generation, Sentinel VM behavior, and other session
 bindings are unresolved. Do not claim a single root cause or that browser-free
 implementation is impossible. No further model submission is authorized.
 
+## Enforcement-token framing comparison
+
+At 15:06 UTC, a fresh helper request was generated and saved before transport;
+no model request was sent. Private evidence is in
+`.diagnostics/http-feda7f9fb0892505/unsent-conversation.json`. Comparing it with
+successful test B found that the browser enforcement proof starts with
+`gAAAAAB`, while the helper proof had no enforcement-token prefix. The current
+SDK's public `getEnforcementToken(requirements)` method calls its internal
+answer routine and adds that prefix. The helper incorrectly called the low-level
+`_generateAnswerAsync` method directly, bypassing protocol framing. Both
+requirements finalization and conversation submission received that raw answer.
+HTTP 200 from finalization therefore did not prove proof acceptance.
+
+The helper now calls the SDK public method with the full prepared requirements
+object. A synthetic SDK regression test throws if the low-level method is used,
+then verifies the framed token and prepare-token binding at the finalization
+HTTP boundary and in the returned submission requirements. It contains no saved
+SDK or real challenge data. The comparison also found an inverted timezone
+offset (helper -240 versus browser 240); both preparation and submission now use
+the unmodified browser-convention offset.
+
+At 15:09 UTC, a second guarded Deno preflight completed all five requests with
+HTTP 200 and four integrity updates. The unsent request had the enforcement
+prefix, exactly matched the proof sent to finalization, preserved the matching
+cookie observation, and used the browser's timezone-offset sign. Private trace:
+`.diagnostics/http-9cd63c5ab126254`. Zero model submissions were made.
+
+Other differences remain: session/cookie state and dynamic tokens, telemetry
+headers, page timing/dimensions, and the Sentinel result length. A shorter
+Sentinel result is a lead, not proof of an execution defect. The framing defect
+is confirmed independently by SDK source and successful B evidence; it is not
+yet established as the sole submission blocker. Do not replay either unsent
+request. Use fresh requirements and a message ID for any approved acceptance.
+
 ## Verification and delivery boundary
 
-Type checking and all fifteen tests passed, including integrity observation and
-state rotation, no-retry tracing, private evidence modes, and existing
+Type checking and all seventeen tests passed, including integrity observation
+and state rotation, no-retry tracing, private evidence modes, and existing
 background answer matching. Code and Markdown formatting pass.
 
 ```sh

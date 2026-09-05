@@ -7,11 +7,12 @@ Use this skill only when the user asks for a GPT Pro answer or explicitly
 invokes `$gpt-pro`. It sends the requested prompt to ChatGPT's private web
 backend through Deno; it does not open or control a browser.
 
-Current status: experimental; browser-free end-to-end acceptance failed. The
-approved four-submission diagnostic batch established that Deno can complete a
-fresh browser-generated request, while the original helper using Codex
-credentials returned HTTP 403. Two confirmed protocol defects were corrected:
-client observation now derives from the integrity cookie, and response integrity
+Current status: experimental; the previous browser-free acceptance failed. A
+subsequent enforcement-token correction awaits fresh acceptance. The approved
+four-submission diagnostic batch established that Deno can complete a fresh
+browser-generated request, while the original helper using Codex credentials
+returned HTTP 403. Two confirmed protocol defects were corrected: client
+observation now derives from the integrity cookie, and response integrity
 updates follow the browser's compare-and-set rule.
 
 The user then approved a separate web-session credential source. The helper now
@@ -32,6 +33,16 @@ acceptance. The remaining request-generation or Sentinel behavior is unresolved;
 this does not establish that a browser-free solution is impossible. Do not spend
 another submission without a new evidence-backed correction and explicit
 approval.
+
+A later comparison with successful test B confirmed that the helper submitted an
+unwrapped proof-of-work answer: it called the SDK's low-level generator, which
+omits the enforcement-token prefix. The helper now uses the SDK's public
+`getEnforcementToken(requirements)` method, matching the browser call path. It
+also preserves the browser's timezone-offset sign. Seventeen tests pass. A
+guarded preflight at 15:09 UTC completed all five requests with HTTP 200 and
+confirmed correctly framed proof shared by finalization and the unsent request.
+No model submission was made. These are confirmed corrections, not evidence of a
+completed answer; a fresh acceptance submission still requires approval.
 
 The helper polls the conversation after a background handoff for up to 30
 minutes and returns only a completed final answer belonging to the submitted

@@ -717,7 +717,7 @@ function patchSentinelSdk(source: string): string {
   return withVm;
 }
 
-class SentinelHarness {
+export class SentinelHarness {
   private constructor(
     private readonly session: ChatSession,
     private readonly sdkSource: string,
@@ -829,10 +829,6 @@ class SentinelHarness {
       JSON.parse(prepareBody),
       "Chat requirements prepare response",
     );
-    const pow = assertRecord(
-      requirements.proofofwork,
-      "Chat requirements proof-of-work",
-    );
     const turnstile = assertRecord(
       requirements.turnstile,
       "Chat requirements Turnstile",
@@ -843,9 +839,10 @@ class SentinelHarness {
     );
 
     bindProof(requirements, proof);
+    // Use the public SDK method: the low-level generator omits protocol framing.
     const finalProof = requiredString(
       await withTimeout(
-        Promise.resolve(engine._generateAnswerAsync(pow.seed, pow.difficulty)),
+        Promise.resolve(engine.getEnforcementToken(requirements)),
         "Chat requirements proof-of-work",
       ),
       "Chat requirements proof-of-work answer",
@@ -1083,7 +1080,10 @@ export function parseSseText(raw: string): ParsedSse {
   return { text, terminal, eventTypes, conversationId };
 }
 
-function conversationBody(prompt: string, messageId: string): JsonObject {
+export function conversationBody(
+  prompt: string,
+  messageId: string,
+): JsonObject {
   return {
     action: "next",
     messages: [
@@ -1102,7 +1102,7 @@ function conversationBody(prompt: string, messageId: string): JsonObject {
     parent_message_id: "client-created-root",
     model: MODEL,
     client_prepare_state: "sent",
-    timezone_offset_min: new Date().getTimezoneOffset() * -1,
+    timezone_offset_min: new Date().getTimezoneOffset(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     conversation_mode: { kind: "primary_assistant" },
     enable_message_followups: true,
@@ -1143,7 +1143,7 @@ export async function run(prompt: string): Promise<string> {
     client_prepare_state: "success",
     client_prepare_dispatch: "immediate",
     client_prepare_source: "context_change",
-    timezone_offset_min: new Date().getTimezoneOffset() * -1,
+    timezone_offset_min: new Date().getTimezoneOffset(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     conversation_mode: { kind: "primary_assistant" },
     system_hints: [],
