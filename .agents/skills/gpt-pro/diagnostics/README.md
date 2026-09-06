@@ -344,3 +344,43 @@ separate global routing repository contains its own committed preference
 changes, outside this public package. All 28 tests, type checking, formatting,
 and local code review passed. Secret scans found no credentials in reachable Git
 history.
+
+## Retrieval throttling on 2026-09-06
+
+The user-wide installed runtime matched `e63d328`; the local repository was
+still at `0818c19` before a fast-forward. All existing branch tips were already
+ancestors of remote main. The installed documentation was older, but its runtime
+scripts were identical to main, so version drift does not explain the reported
+retrieval failures.
+
+At 14:31 UTC, private saved state contained 22 completed jobs and three pending
+jobs with saved conversation IDs and `Conversation retrieval returned HTTP
+429`.
+A job completed as recently as 14:17 UTC. One bounded read of an affected
+conversation returned HTTP 429, JSON `{"detail":"Too many requests"}`, and no
+`Retry-After` header. No prompt was submitted for diagnosis.
+
+This identifies answer retrieval as the failing stage. It does not establish the
+upstream threshold or whether it applies to an account, IP, or another scope.
+The response did not identify exhausted model quota or expired login. The helper
+discarded the response body and, without `Retry-After`, kept retrying every 30
+seconds. Restarting retrieval also lost any server-directed wait. These are
+confirmed retry-policy defects, not proof of the initial throttle trigger.
+
+Retrieval now increases its delay after 429 and persists the next read time
+before sleeping. The delay starts at one minute and doubles to a 15-minute cap;
+a longer `Retry-After` takes precedence. Successful reads reset backoff. The
+existing per-job lock, six-hour window, and no-resubmission policy remain. Tests
+cover repeated header-free 429s, recovery, disk-backed restart with an HTTP-date
+`Retry-After`, and a saved cooldown beyond the six-hour window. There is no
+account-wide or cross-host limiter.
+
+At 14:35 UTC the updated installed helper, invoked from `/tmp` with an existing
+job's `--result`, again received 429 and saved `rateLimitCount: 1` and a
+`nextPollAt` exactly one minute later. The bounded diagnostic reader was then
+stopped; the pending job and cooldown remain resumable. A cached completed job
+was also readable from `/tmp`. Thus the installed cooldown behavior is live
+verified, but upstream retrieval recovery is not: throttling still applied.
+Other sessions were observed starting their own retrieval processes during this
+diagnosis, so no account-wide quiet period was established. No credentials were
+changed and no new model turn was submitted.

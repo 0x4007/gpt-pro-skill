@@ -1069,6 +1069,12 @@ export async function pollJob(
   job.status = "pending";
   await save(job);
   while (now() < deadline) {
+    // Keep server and local backoff across process interruption and --result.
+    const nextPollAt = Date.parse(job.nextPollAt ?? "");
+    if (nextPollAt > now()) {
+      await sleep(Math.min(nextPollAt - now(), deadline - now()));
+      continue;
+    }
     let retryable = false;
     let completed: string | undefined;
     let delay = job.pollCount < 6 ? 5000 : 30_000;
@@ -1089,6 +1095,16 @@ export async function pollJob(
         response.status === 429 || response.status >= 500 ||
         response.status === 404
       ) {
+        if (response.status === 429) {
+          job.rateLimitCount = (job.rateLimitCount ?? 0) + 1;
+          delay = Math.max(
+            delay,
+            Math.min(
+              900_000,
+              60_000 * 2 ** Math.min(job.rateLimitCount - 1, 4),
+            ),
+          );
+        }
         const retryAfter = response.headers.get("retry-after");
         const seconds = retryAfter === null ? NaN : Number(retryAfter);
         const retryMs = Number.isFinite(seconds)
@@ -1111,6 +1127,8 @@ export async function pollJob(
           "Conversation response",
         );
         const answer = answerForMessage(conversation, job.messageId);
+        delete job.rateLimitCount;
+        delete job.nextPollAt;
         delete job.lastError;
         if (answer !== undefined) {
           completed = answer;
@@ -1129,6 +1147,7 @@ export async function pollJob(
       await save(job);
       return completed;
     }
+    if (retryable) job.nextPollAt = new Date(now() + delay).toISOString();
     await save(job);
     if (!retryable) throw new Error(job.lastError);
     const remaining = deadline - now();
@@ -1519,6 +1538,8 @@ function jobSummary(job: ProJob) {
     updatedAt: job.updatedAt,
     lastPollAt: job.lastPollAt,
     pollCount: job.pollCount,
+    rateLimitCount: job.rateLimitCount,
+    nextPollAt: job.nextPollAt,
     conversationKnown: !!job.conversationId,
     promptPreview: job.prompt.slice(0, 120),
     lastError: job.lastError,

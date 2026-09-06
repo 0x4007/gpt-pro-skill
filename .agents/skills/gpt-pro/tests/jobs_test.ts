@@ -144,6 +144,137 @@ Deno.test("transient GET failures honor Retry-After; auth failures preserve resu
   ) throw new Error("Auth failure lost resumable state");
 });
 
+Deno.test("repeated 429s back off without Retry-After and reset after recovery", async () => {
+  const job = fixture();
+  let clock = 0, calls = 0;
+  const delays: number[] = [];
+  const answer = await pollJob(
+    {
+      fetch: () => {
+        calls++;
+        return Promise.resolve(
+          calls <= 6
+            ? Response.json({ detail: "Too many requests" }, { status: 429 })
+            : Response.json(conversation(job)),
+        );
+      },
+    },
+    job,
+    async () => {},
+    {
+      now: () => clock,
+      sleep: async (ms) => {
+        delays.push(ms);
+        clock += ms;
+      },
+    },
+  );
+  if (
+    answer !== "fixture-answer" ||
+    JSON.stringify(delays) !==
+      JSON.stringify([60000, 120000, 240000, 480000, 900000, 900000]) ||
+    job.rateLimitCount !== undefined || job.nextPollAt !== undefined
+  ) throw new Error("429 backoff or recovery reset failed");
+});
+
+Deno.test("interrupted retrieval preserves Retry-After and backoff in the job store", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const store = new JobStore(new URL(`file://${directory}/`));
+    const job = await store.create("fixture", "fixture-account");
+    job.conversationId = crypto.randomUUID();
+    let clock = 0;
+    try {
+      await pollJob(
+        {
+          fetch: () =>
+            Promise.resolve(
+              new Response(null, {
+                status: 429,
+                headers: { "retry-after": new Date(180000).toUTCString() },
+              }),
+            ),
+        },
+        job,
+        (value) => store.save(value),
+        {
+          now: () => clock,
+          sleep: () => {
+            throw new Error("fixture process interruption");
+          },
+        },
+      );
+    } catch { /* Resume from disk below. */ }
+    const resumed = await store.read(job.id);
+    if (
+      resumed.rateLimitCount !== 1 ||
+      Date.parse(resumed.nextPollAt ?? "") !== 180000
+    ) {
+      throw new Error("Cooldown was not persisted before sleep");
+    }
+    let calls = 0;
+    const delays: number[] = [];
+    await pollJob(
+      {
+        fetch: () => {
+          if (clock < 180000) throw new Error("Read before Retry-After");
+          return Promise.resolve(
+            ++calls === 1
+              ? new Response(null, { status: 429 })
+              : Response.json(conversation(resumed)),
+          );
+        },
+      },
+      resumed,
+      (value) => store.save(value),
+      {
+        now: () => clock,
+        sleep: async (ms) => {
+          delays.push(ms);
+          clock += ms;
+        },
+      },
+    );
+    if (
+      calls !== 2 || JSON.stringify(delays) !== JSON.stringify([180000, 120000])
+    ) {
+      throw new Error("Resume reset the saved cooldown or backoff");
+    }
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("saved cooldown beyond the poll window makes no request", async () => {
+  const job = fixture();
+  job.nextPollAt = new Date(POLL_WINDOW_MS * 2).toISOString();
+  let clock = 0, calls = 0;
+  try {
+    await pollJob(
+      {
+        fetch: () => {
+          calls++;
+          throw new Error("Unexpected read");
+        },
+      },
+      job,
+      async () => {},
+      {
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      },
+    );
+  } catch { /* Expected resumable timeout. */ }
+  if (
+    calls !== 0 || clock !== POLL_WINDOW_MS || job.status !== "timed_out" ||
+    Date.parse(job.nextPollAt) !== POLL_WINDOW_MS * 2
+  ) {
+    throw new Error("Saved cooldown did not respect the bounded poll window");
+  }
+});
+
 Deno.test("stream capture persists an early conversation ID before an interrupted stream", async () => {
   const chunks = [
     'data: {"conversation_',
