@@ -124,11 +124,14 @@ the retrieval process must run to collect and cache results locally.
 Each polling window lasts up to **six hours** after the per-job lock is
 acquired. It polls every five seconds initially, then every thirty seconds, with
 bounded HTTP requests. Transient read errors and HTTP 404/429/5xx are retried;
-`Retry-After` is honored. Authentication errors stop retrieval so the session
-can be repaired. Resume with the same job ID after a process interruption, auth
-repair, or six-hour timeout. Retrieval never submits the prompt again. Completed
-results are cached and can be read without network access or unexpired
-credentials.
+repeated 429s back off for 1, 2, 4, 8, then 15 minutes. `Retry-After` can extend
+the delay. The job saves the cooldown across restarts and reports `nextPollAt`
+and `rateLimitCount` in `--status`. A successful read resets the backoff. Jobs
+do not share a limiter, so avoid new work while throttled. Authentication errors
+stop retrieval so the session can be repaired. Resume with the same job ID after
+a process interruption, auth repair, or six-hour timeout. Retrieval never
+submits the prompt again. Completed results are cached and can be read without
+network access or unexpired credentials.
 
 Use one active retrieval process per job. A second `--result` or overlapping
 `--watch` waits for the first process to release its lock; this lock wait is
@@ -177,7 +180,7 @@ deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts
 deno fmt --check README.md .agents/skills/gpt-pro/
 ```
 
-All 28 offline tests pass. Live verification covers the normal CLI, two
+All 31 offline tests pass. Live verification covers the normal CLI, two
 concurrent jobs, offline cached rereads, and a GitHub-installed copy running
 outside the repository. The installed copy completed a source-backed research
 request with verified `gpt-6-pro` metadata, exact message matching, and three

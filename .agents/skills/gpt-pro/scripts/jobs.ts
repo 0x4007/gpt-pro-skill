@@ -24,6 +24,8 @@ export interface ProJob {
   lastError?: string;
   lastPollAt?: string;
   pollCount: number;
+  rateLimitCount?: number;
+  nextPollAt?: string;
 }
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const statuses = new Set([
@@ -89,7 +91,13 @@ export class JobStore {
       job.version !== 1 || job.id !== id || !ID.test(job.messageId) ||
       job.model !== "gpt-6-pro" || !statuses.has(job.status) ||
       typeof job.account !== "string" || typeof job.prompt !== "string" ||
-      !Number.isFinite(job.pollCount)
+      !Number.isFinite(job.pollCount) ||
+      (job.rateLimitCount !== undefined &&
+        (!Number.isSafeInteger(job.rateLimitCount) ||
+          job.rateLimitCount < 0)) ||
+      (job.nextPollAt !== undefined &&
+        (typeof job.nextPollAt !== "string" ||
+          !Number.isFinite(Date.parse(job.nextPollAt))))
     ) throw new Error("Invalid GPT Pro job record");
     return job;
   }

@@ -24,7 +24,7 @@ Current status: working experimental integration, verified on 2026-09-05. The
 normal CLI and two concurrent jobs completed successfully. An official
 GitHub-installed copy ran outside the repository and completed research with
 verified `gpt-6-pro` metadata, exact message matching, and three `web.run`
-calls. All 28 offline tests pass. See
+calls. All 31 offline tests pass. See
 [sanitized findings](diagnostics/README.md) for the earlier failures,
 corrections, and acceptance evidence. Six-hour waits are covered by
 simulated-clock tests, not a six-hour live soak test. Session refresh remains
@@ -50,7 +50,13 @@ because a wait or process timed out. A job without a saved conversation ID
 cannot be safely recovered automatically; report its `uncertain`, `submitting`,
 or `preparing` state and inspect conversation history before any new submission.
 Transient GET errors and HTTP 404/429/5xx retry within the six-hour window;
-authentication failures stop and preserve the resumable job.
+authentication failures stop and preserve the resumable job. Repeated retrieval
+HTTP 429 responses use backoff of 1, 2, 4, 8, then 15 minutes, or longer when
+`Retry-After` requires it. The job saves `nextPollAt` and `rateLimitCount`;
+`--status` exposes both. Restarting retrieval retains the cooldown. Do not
+launch extra probes or resubmit a prompt to work around 429. Successful
+retrieval resets the backoff. Separate jobs do not share a limiter; avoid
+starting more work while retrieval is throttled.
 
 See the [agent workflow](https://github.com/0x4007/gpt-pro-skill#agent-workflow)
 for complete commands and recovery semantics. Job records include prompts and
