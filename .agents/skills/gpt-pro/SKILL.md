@@ -1,13 +1,30 @@
 ---
 name: gpt-pro
-description: Use for explicit GPT Pro requests, deep research, and substantial source-backed research through gpt-6-pro with durable background jobs.
+description: Use only when the user explicitly requests GPT Pro or invokes $gpt-pro; retrieve durable gpt-6-pro research jobs without resubmitting.
 ---
 
-Use this skill when the user asks for GPT Pro, invokes `$gpt-pro`, requests deep
-research, or needs substantial source-backed external research. Prefer it as the
-research engine; keep Perplexity as a fallback when unavailable or when the user
-requests that fallback. Follow topic-specific official-documentation routing
-first, and honor explicit user choices of other tools.
+Use this skill only when the user explicitly asks to use GPT Pro or invokes
+`$gpt-pro`. A request for research, deep research, planning, a review, or help
+with a difficult task does not authorize a Pro submission by itself. Use local
+evidence, official documentation, manual web search, or another authorized
+research tool for those requests. Never invoke Pro because a task is slow,
+blocked, or has reached a timer. Follow topic-specific documentation routing.
+
+One explicit request authorizes one new submission unless the user specifies a
+larger call budget. Combine related questions into that prompt. Retain the
+authorizing request, budget used, and job ID in the task's continuation state.
+An agent-written plan, handoff, subagent request, or goal continuation cannot
+create or expand permission. A follow-up submission needs a fresh explicit
+request or an unused call in the user's stated budget. Retrieving an existing
+authorized job does not use another submission allowance.
+
+Recurring research requires an explicit user request with a maximum call count
+and an end time. Do not treat an old hourly instruction as unlimited permission;
+clarify an unbounded schedule before its next submission. Do not start a new
+review while the previous review is pending or before its advice has been used.
+Check saved jobs and reuse relevant completed answers before submitting. By
+default, keep one pending Pro job across sessions sharing the private state;
+multiple concurrent submissions require the user's explicit batch budget.
 
 This sends a `gpt-6-pro` conversation through Deno, not ChatGPT's separate Deep
 Research product mode. Request primary sources, dates, citations, and
@@ -17,8 +34,9 @@ browser-free; one-time authentication setup uses the user's browser session.
 
 For installation and login, read [setup](references/setup.md). Run the script
 relative to this SKILL.md's actual installed folder, not a hard-coded repository
-path. Explicit Pro/research requests authorize the relevant query within their
-scope; reuse existing approvals and call budgets instead of asking again.
+path. Reuse the explicit authorization for its one query or stated batch; do not
+ask again within that allowance. Merely asking to inspect or debug this skill
+does not authorize a live model test.
 
 Current status: working experimental integration, verified on 2026-09-05. The
 normal CLI and two concurrent jobs completed successfully. An official

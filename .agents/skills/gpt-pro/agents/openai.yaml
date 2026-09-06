@@ -1,6 +1,6 @@
 interface:
   display_name: "GPT Pro Research"
-  short_description: "GPT Pro requests and thorough research with durable jobs"
+  short_description: "Explicitly requested GPT Pro research with durable jobs"
   default_prompt: "Use $gpt-pro to research this question thoroughly, cite primary sources, and retrieve the completed answer."
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false
