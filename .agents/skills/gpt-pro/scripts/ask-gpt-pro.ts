@@ -2,6 +2,7 @@ import { createContext, runInContext } from "node:vm";
 import { ensurePrivateState, stateDirectory } from "./state.ts";
 import { JobStore, POLL_WINDOW_MS, type ProJob } from "./jobs.ts";
 import { reportUsage, usageForAccount } from "./usage.ts";
+import { renewWebSession, tokenExpiry } from "./authenticate.ts";
 
 type JsonObject = Record<string, any>;
 
@@ -96,6 +97,22 @@ function withTimeout<T>(
 
 class CookieJar {
   #values: Array<[string, string]> = [];
+  #httpOnly = new Set<string>();
+
+  private isHttpOnly(name: string): boolean {
+    return this.#httpOnly.has(name) ||
+      /^(?:__Secure-next-auth\.session-token(?:\.\d+)?|__Host-next-auth\.csrf-token|__cf_bm|cf_clearance|_cfuvid)$/
+        .test(name);
+  }
+
+  scriptHeader(): string {
+    return this.#values.filter(([name]) => !this.isHttpOnly(name))
+      .map(([name, value]) => `${name}=${value}`).join("; ");
+  }
+
+  setFromScript(name: string, value: string): void {
+    if (!this.isHttpOnly(name)) this.set(name, value);
+  }
 
   seed(header: string): void {
     this.#values = header.split(";").map((part) => {
@@ -130,7 +147,9 @@ class CookieJar {
       const first = line.split(";", 1)[0];
       const separator = first.indexOf("=");
       if (separator > 0) {
-        this.set(first.slice(0, separator), first.slice(separator + 1));
+        const name = first.slice(0, separator);
+        if (/;\s*httponly(?:;|$)/i.test(line)) this.#httpOnly.add(name);
+        this.set(name, first.slice(separator + 1));
       }
     }
     const update = response.headers.get("x-oai-is-update");
@@ -174,7 +193,10 @@ const WEB_HEADERS = new Set([
   "chatgpt-account-id",
 ]);
 
-export function parseWebSession(envText: string): WebSession {
+export function parseWebSession(
+  envText: string,
+  allowExpired = false,
+): WebSession {
   // This is one approved JSON credential field, not a general dotenv loader.
   const lines = envText.split(/\r?\n/).filter((line) =>
     /^CHATGPT_WEB_SESSION=/.test(line)
@@ -256,9 +278,9 @@ export function parseWebSession(envText: string): WebSession {
   } catch {
     throw new Error("Invalid web-session token expiry");
   }
-  if ((expiry as number) * 1000 <= Date.now()) {
+  if (!allowExpired && (expiry as number) * 1000 <= Date.now()) {
     throw new Error(
-      "ChatGPT web session expired; replace the state-directory .env snapshot",
+      "ChatGPT web session expired; run scripts/authenticate.ts to sign in again",
     );
   }
   return session;
@@ -277,10 +299,13 @@ export async function loadWebSession(
     text = await Deno.readTextFile(path);
   } catch {
     throw new Error(
-      "Could not read owner-only state-directory .env web session (mode 0600 required)",
+      "Could not read owner-only ChatGPT session; run scripts/authenticate.ts (state .env requires mode 0600)",
     );
   }
-  return parseWebSession(text);
+  const session = parseWebSession(text, true);
+  return tokenExpiry(session.accessToken) <= Date.now() + 300000
+    ? await renewWebSession(directory)
+    : session;
 }
 
 export function parseSessionImport(text: string): WebSession {
@@ -725,14 +750,14 @@ function makeWindow(
       return [];
     },
     get cookie() {
-      return session.cookies.header();
+      return session.cookies.scriptHeader();
     },
     set cookie(value: string) {
       const first = value.split(";", 1)[0];
       const separator = first.indexOf("=");
       if (separator > 0) {
-        session.cookies.set(
-          first.slice(0, separator),
+        session.cookies.setFromScript(
+          first.slice(0, separator).trim(),
           first.slice(separator + 1),
         );
       }

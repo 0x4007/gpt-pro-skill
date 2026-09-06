@@ -6,6 +6,8 @@ import {
 
 // Synthetic SDK surface; no saved SDK, challenge, or account data is bundled.
 const sdk = `
+if (document.cookie.includes("PRIVATE_AUTH_FIXTURE")) throw new Error("SDK can read HttpOnly credentials");
+document.cookie = "__Secure-next-auth.session-token=overwritten";
 class O {
   getRequirementsToken() { return "fixture-requirements-proof"; }
   _generateAnswerAsync() { throw new Error("Low-level answer lacks protocol framing"); }
@@ -28,6 +30,11 @@ Deno.test("Sentinel finalization sends the SDK enforcement token, not its raw an
   let step = 0;
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
+    if (
+      !request.headers.get("cookie")?.includes(
+        "__Secure-next-auth.session-token=PRIVATE_AUTH_FIXTURE",
+      )
+    ) throw new Error("SDK changed the HTTP authentication cookie");
     const expected = [
       "/backend-api/sentinel/sdk.js",
       "/sentinel/fixture/sdk.js",
@@ -65,7 +72,8 @@ Deno.test("Sentinel finalization sends the SDK enforcement token, not its raw an
   try {
     const session = new ChatSession({
       accessToken: "fixture-token",
-      cookie: "oai-did=fixture",
+      cookie:
+        "oai-did=fixture; __Secure-next-auth.session-token=PRIVATE_AUTH_FIXTURE",
       headers: {
         "oai-device-id": "fixture",
         "oai-session-id": "fixture-session",

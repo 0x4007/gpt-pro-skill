@@ -5,8 +5,8 @@ complex questions, continue other work, and retrieve each completed answer by
 its durable job ID. No browser runtime is used.
 
 This is an experimental integration with private ChatGPT endpoints. You need
-your own account with access to the model and a valid web-session snapshot. The
-session does not refresh automatically, and SDK changes can break it.
+your own account with access to the model and a valid web-session snapshot.
+Private endpoint and SDK changes can break it.
 
 ## Install and sign in
 
@@ -24,23 +24,37 @@ installer also supports an explicit `--dest` for that path. See
 exact installer command and plugin alternative. The package is not listed in
 OpenAI's universal public directory.
 
-**Authentication is still a developer setup flow.** Sign in to ChatGPT in a
-browser, copy the request headers from a successful models request in DevTools,
-then use `--auth-import` and `--auth-check`. The importer validates and stores
-your own snapshot without executing copied commands or retaining challenge
-headers. The check makes no model request. There is no OAuth/device-code login,
-password collection, Codex-login fallback, or automatic session refresh.
+**On macOS, sign in to ChatGPT once in your normal browser, then let the agent
+run:**
 
-Private state now lives in `~/.local/share/gpt-pro/`, independent of repository
-and install paths. It contains `.env` and `.gpt-pro-jobs/`. Directories use mode
-0700 and files mode 0600. The repository contains no account credentials.
-Earlier users can import their repository `.env` and copy completed job records;
-see the setup guide. `--state-dir /absolute/private/directory` overrides the
-location and removes the need for HOME environment access.
+```sh
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
+  --allow-run=/usr/bin/security --allow-net=chatgpt.com \
+  ~/.agents/skills/gpt-pro/scripts/authenticate.ts
+```
 
-This is a browser-free **request runtime**, not a browser-free login flow. It is
-usable by developers comfortable with DevTools; it is not turnkey consumer
-onboarding. Use your own account with access to `gpt-6-pro`.
+The command reads only ChatGPT sign-in, device, and integrity cookies from a
+local browser profile through macOS Keychain. It obtains the access token and
+current client metadata over HTTPS, checks authentication, and saves it locally.
+It launches no browser, captures no traffic, and prints no credentials. macOS
+may ask for Keychain access. Multiple signed-in profiles require a selection.
+
+Brave on macOS is live-verified. Chrome, Chromium, and Edge are implemented but
+not live-tested. Native bootstrap on Windows/Linux and alternative browser
+install locations are not implemented. Users without an existing ChatGPT session
+must sign in once; the helper cannot create credentials or complete MFA.
+
+Private state lives in `~/.local/share/gpt-pro/`, independent of installation.
+Directories use mode 0700 and files 0600. Near-expiry or expired access tokens
+renew automatically through the stored ChatGPT session cookie, without browser
+access. Revoked or expired sign-in cookies require signing in again and
+rerunning the command. Renewal rejects account changes and never retries a model
+request.
+
+This remains an experimental private-endpoint integration. There is no supported
+OAuth/device-code flow for this helper, and a successful authentication check is
+not proof that a model submission will be accepted. See
+[setup and platform limits](.agents/skills/gpt-pro/references/setup.md).
 
 ## Research routing
 
@@ -226,7 +240,7 @@ deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts
 deno fmt --check README.md .agents/skills/gpt-pro/
 ```
 
-All 35 offline tests pass. Live verification covers the normal CLI, two
+All 42 offline tests pass. Live verification covers the normal CLI, two
 concurrent jobs, offline cached rereads, and a GitHub-installed copy running
 outside the repository. The installed copy completed a source-backed research
 request with verified `gpt-6-pro` metadata, exact message matching, and three

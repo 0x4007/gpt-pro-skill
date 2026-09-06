@@ -1,5 +1,31 @@
 # Browser-free submission diagnosis
 
+## Automatic authentication prototype, 2026-09-06
+
+The new `scripts/authenticate.ts` bootstrapped a fresh private state directory
+from macOS Brave using normal Keychain access and four ChatGPT cookies. The
+session endpoint and public page supplied the access token and client build
+metadata. The command and a separate normal CLI `--auth-check` returned success
+(HTTP 200), without launching a browser, capturing traffic, or submitting a
+model prompt. Credentials were not printed. Native Chrome/Chromium/Edge paths
+remain unverified; Windows/Linux bootstrap is not implemented.
+
+Lazy renewal, account-subject binding, cookie rotation, concurrent renewal,
+lock-timeout rejection, and failure preservation are covered by focused tests.
+The Sentinel fixture also checks that script cannot read or overwrite sign-in
+cookies. Natural token-expiry rotation and a model submission using this new
+bootstrap have not been live-verified. The entries below retain older evidence.
+
+Primary references checked for this change:
+
+- [OpenAI Codex authentication](https://developers.openai.com/codex/auth)
+- [Chromium macOS cookie encryption](https://github.com/chromium/chromium/blob/130.0.6723.58/components/os_crypt/sync/os_crypt_mac.mm)
+- [Chromium cookie storage and domain binding](https://github.com/chromium/chromium/blob/main/net/extras/sqlite/sqlite_persistent_cookie_store.cc)
+- [Chrome platform protection limits](https://security.googleblog.com/2024/07/improving-security-of-chrome-cookies-on.html)
+- [Consented browser connection alternative](https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session)
+
+## Earlier submission evidence
+
 Current status (2026-09-05): normal CLI, concurrent jobs, and installed-copy
 research acceptance passed. The repository is public and the runtime/package
 changes are merged. Private state now lives outside the installation directory.
