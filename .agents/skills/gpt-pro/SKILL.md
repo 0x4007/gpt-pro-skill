@@ -42,7 +42,8 @@ This sends a `gpt-6-pro` conversation through Deno, not ChatGPT's separate Deep
 Research product mode. Request primary sources, dates, citations, and
 uncertainties, then verify important cited claims with source retrieval. Do not
 assume a model answer proves live web research. The request runtime is
-browser-free; one-time authentication setup uses the user's browser session.
+browser-free; initial authentication can reuse a local signed-in browser profile
+without launching the browser or capturing traffic.
 
 For installation and login, read [setup](references/setup.md). Run the script
 relative to this SKILL.md's actual installed folder, not a hard-coded repository
@@ -50,15 +51,43 @@ path. Reuse the explicit authorization for its one query or stated batch; do not
 ask again within that allowance. Merely asking to inspect or debug this skill
 does not authorize a live model test.
 
+During an authorized installation or sign-in request, handle authentication for
+the user. Check existing state with `--auth-check`; if it is missing, run:
+
+```sh
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
+  --allow-run=/usr/bin/security --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/authenticate.ts"
+```
+
+Set `SKILL_DIR` to this installed skill folder first. This command performs only
+authentication, with no model turn. macOS Brave is live-verified; Chrome,
+Chromium, and Edge support is implemented but unverified. It reads only ChatGPT
+session, device, and integrity cookies via normal Keychain access and saves the
+verified session locally. Keep its credential-free result; never read tokens or
+cookies into agent context. Do not ask the user to open DevTools, capture a HAR,
+or copy headers. If multiple profiles appear, choose only the user-specified
+profile or ask which to use. Let the user handle any OS access prompt or initial
+ChatGPT sign-in. Do not bypass a denied permission or a login challenge. Native
+Windows/Linux bootstrap is not implemented; report that boundary directly.
+
+Stored access tokens renew automatically before expiry over HTTPS without
+browser access. If the sign-in cookie expires or is revoked, ask the user to
+sign in again, then rerun the authentication command. Do not repeatedly retry
+authentication errors or automatically submit a model test.
+
 Current status: working experimental integration, verified on 2026-09-05. The
 normal CLI and two concurrent jobs completed successfully. An official
 GitHub-installed copy ran outside the repository and completed research with
 verified `gpt-6-pro` metadata, exact message matching, and three `web.run`
-calls. All 35 offline tests pass. See
+calls. All 42 offline tests pass. See
 [sanitized findings](diagnostics/README.md) for the earlier failures,
 corrections, and acceptance evidence. Six-hour waits are covered by
-simulated-clock tests, not a six-hour live soak test. Session refresh remains
-manual and private SDK changes can break the integration.
+simulated-clock tests, not a six-hour live soak test. Authentication bootstrap
+was verified on macOS Brave on 2026-09-06 with fresh state and a read-only CLI
+check. Tests cover automatic renewal and account-change rejection; real
+token-expiry rotation and a model submission using the new bootstrap are not
+live-verified. Private SDK changes can break the integration.
 
 The helper persists a private job record before submission and saves the
 conversation ID as soon as it arrives. Retrieval polls for up to six hours after
@@ -118,9 +147,10 @@ conversation bodies.
 
 Keep `.env` outside Git and owner-readable only (mode 0600). Never print tokens,
 cookies, Sentinel values, or raw evidence. The request runtime uses no browser,
-HAR reader, interception code, or automatic session refresh. HOME/USERPROFILE
-are used only to locate private state. The snapshot can expire or become
-invalid; the helper rejects expired tokens and stops on backend rejection. It
+HAR reader, or interception code. HOME/USERPROFILE locate private state; the
+separate macOS sign-in command also uses HOME to locate browser profiles. The
+helper renews near-expiry and expired tokens using the saved session cookie,
+preserves existing state on failed renewal, and stops on backend rejection. It
 restricts authenticated requests to `https://chatgpt.com` and rejects redirects.
 
 The helper fetches the current Sentinel SDK, runs its proof-of-work and

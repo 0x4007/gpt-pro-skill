@@ -53,57 +53,71 @@ For plugin installs, refresh the marketplace and use the plugin manager's
 update/reinstall workflow. Do not install the standalone and plugin versions
 simultaneously unless you deliberately want duplicate skill entries.
 
-## Sign in and import a session
+## Sign in
 
-There is no supported OAuth/device-code login built into this helper. A Codex
-login or an OpenAI API key is not a substitute for the ChatGPT web-session
-snapshot this private-endpoint integration uses. Each developer must use their
-own ChatGPT account with access to `gpt-6-pro`.
-
-1. Install Deno and sign in at `https://chatgpt.com` in your normal browser.
-2. Open browser developer tools, select Network, and reload ChatGPT.
-3. Find a successful request to `https://chatgpt.com/backend-api/models`. Copy
-   its **request headers** (not response headers, a HAR, cURL, or JavaScript).
-   The capture must include Authorization, Cookie, User-Agent, device/session
-   IDs, client build/version, and language headers from the same request.
-4. Save the copied headers in an owner-only local text file, or pipe them from
-   the clipboard to stdin. Never paste them into a chat, issue, shell argument,
-   PR, or shared log. If the browser omits sensitive headers from the copy,
-   inspect the request locally and include them; do not combine different
-   sessions or invent missing values.
-5. Import and check the session using the installed helper:
+On macOS, use an existing ChatGPT sign-in in Brave, Chrome, Chromium, or Edge.
+Ask the coding agent to authenticate the skill, or run:
 
 ```sh
-# Set this to the actual installed skill directory. Plugin paths differ.
+# Use the actual installed directory; plugin paths differ.
 SKILL_DIR="$HOME/.agents/skills/gpt-pro"
 
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
-  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --auth-import /absolute/private/headers.txt
+  --allow-run=/usr/bin/security --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/authenticate.ts"
+```
 
+The command discovers profiles with ChatGPT sign-in cookies. With one matching
+profile it proceeds automatically; with several it asks for a profile number. It
+uses the normal macOS Keychain access path, which may show an OS permission
+prompt. If access is denied, it stops. It does not unlock the Keychain, alter
+browser permissions, launch a browser, copy a browser database, or capture
+network traffic. No HAR, DevTools, copied headers, API key, or Codex token is
+needed. If no readable signed-in profile exists, sign in to ChatGPT once and run
+the command again. MFA and login challenges remain with the user.
+
+Only ChatGPT session-token chunks, device ID, and integrity cookies are read
+from the selected profile. The browser encryption key stays in process memory
+and is never saved. Credentials go only to `https://chatgpt.com`, with redirects
+rejected. The helper gets a web access token from the first-party session
+endpoint and client build metadata from the page, then verifies a read-only
+models request before saving. It prints a credential-free result.
+
+Default private state is `~/.local/share/gpt-pro/`: `.env` holds the session;
+`.gpt-pro-jobs/` holds job records. Directories use mode 0700 and files 0600.
+Installation updates preserve this state. Both scripts accept the existing
+`--state-dir /absolute/private/directory` prefix. Local browser discovery still
+needs HOME even with an explicit state directory.
+
+Subsequent requests renew tokens automatically when expired or within five
+minutes of expiry. Renewal uses the saved sign-in cookie over HTTPS, updates
+rotated cookies and client metadata, rejects subject changes, and saves only
+after a read-only authentication check succeeds. Concurrent renewals share a
+private file lock. No browser or Keychain access is needed for renewal. Failed
+renewal preserves the existing file and does not retry a model submission. If
+the underlying sign-in expires or is revoked, sign in again and rerun
+`authenticate.ts`; resume jobs with `--result` instead of resubmitting them.
+
+Check an existing installation without a model turn:
+
+```sh
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
   "$SKILL_DIR/scripts/ask-gpt-pro.ts" --auth-check
 ```
 
-`--auth-import -` accepts stdin. The importer also accepts a JSON object with
-`accessToken`, `cookie`, and `headers`, or an existing `CHATGPT_WEB_SESSION`
-`.env` entry. It validates token expiry, matching device state, integrity state,
-and header values; captured challenge/target headers are excluded. It does not
-execute copied commands. Invalid imports leave the previous session intact.
+A successful check proves authentication for that read-only request. It does not
+prove model availability or conversation-submission eligibility. A live model
+test requires a separately authorized submission.
 
-The check makes a read-only request and consumes no model turn. HTTP 200 proves
-that this request can authenticate, not that a model submission will succeed. Do
-one explicitly requested small prompt to verify end-to-end access.
+### Explicit session imports
 
-Default private state is `~/.local/share/gpt-pro/`: `.env` holds the snapshot;
-`.gpt-pro-jobs/` holds job records. Directories use mode 0700 and files 0600.
-This state is independent of the skill installation and survives replacement of
-the installed code. On another account or machine, sign in and import its own
-session; do not distribute your snapshot. Delete a temporary capture after
-confirming the import if you no longer need it.
-
-The snapshot does not refresh automatically. On expiry or authentication
-failure, repeat the import from a fresh successful browser request, then resume
-existing jobs with `--result`, rather than submitting those prompts again.
+`--auth-import <file>` and `--auth-import -` remain available for intentional
+private-state migration. They accept an existing `CHATGPT_WEB_SESSION` entry, a
+JSON object with `accessToken`, `cookie`, and `headers`, or raw request headers.
+Do not paste these into chat, issues, command arguments, or logs. Imports
+validate expiry and device/integrity bindings, filter captured challenge
+headers, execute no copied commands, and preserve the old session on invalid
+input. Normal Mac onboarding does not use this interface.
 
 ## State migration and overrides
 
@@ -120,12 +134,24 @@ needed. There is no automatic search for old repository credentials.
 
 ## Limits
 
-The request runtime is browser-free; initial sign-in/session capture is not. The
-helper depends on private ChatGPT endpoints and a changing Sentinel SDK. It has
-live evidence for short queries, concurrent jobs, and installed use;
-long-duration reliability and setup on every OS/browser are not established.
-This is usable by developers comfortable with DevTools, not turnkey consumer
-login. Never promise an API-supported authentication flow or automatic refresh.
+Live verification covers macOS Brave bootstrap into fresh state and a separate
+CLI authentication check, with no browser launch or network capture. Chrome,
+Chromium, and Edge paths are implemented but unverified. Browser applications
+must be under `/Applications`, with standard per-user profiles. The native
+reader supports Chromium cookie database versions 23/24 and macOS v10
+protection. Unknown protection formats fail without bypass attempts. Native
+Windows/Linux bootstrap, Firefox, Safari, and custom profile paths are not
+implemented. Direct renewal works from an existing imported session without
+using native browser APIs, but cross-platform live acceptance is not claimed.
+
+The helper uses private ChatGPT endpoints and a changing Sentinel SDK. There is
+no documented OAuth/device-code grant for this exact integration. OpenAI API
+keys and Codex sign-in are not automatically exchanged for web credentials. A
+new user still needs their own account and model access. Fresh bootstrap has not
+yet been used for a separately authorized live model submission; read-only
+authentication does not prove Sentinel acceptance. Actual near-expiry renewal is
+covered by focused tests; the live session endpoint returned a valid token but
+did not need to rotate that unexpired token.
 
 Official references:
 
