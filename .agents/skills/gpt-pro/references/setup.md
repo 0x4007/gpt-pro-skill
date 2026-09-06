@@ -80,7 +80,7 @@ SKILL_DIR="$HOME/.agents/skills/gpt-pro"
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
   "$SKILL_DIR/scripts/ask-gpt-pro.ts" --auth-import /absolute/private/headers.txt
 
-deno run --allow-env=HOME,USERPROFILE --allow-read --allow-net=chatgpt.com \
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
   "$SKILL_DIR/scripts/ask-gpt-pro.ts" --auth-check
 ```
 
@@ -131,3 +131,16 @@ Official references:
 
 - https://developers.openai.com/codex/skills
 - https://developers.openai.com/plugins/build/plugins
+
+## Subscription usage advice
+
+`--auth-check` also reports subscription-aware local usage advice on stderr. It
+needs local write permission to inspect or initialize the job store and maintain
+the usage cache. Without it, authentication can still succeed but usage advice
+is unavailable. It uses a read-only account lookup with a six-hour private
+cache; it does not submit a model prompt. Supported personal tiers are Pro $200
+(200/week) and Pro $100 (50/week shared with Sol Pro), based on published limits
+verified on 2026-09-06. Other plans remain unknown. The actual Pro quota reset
+and remaining balance are unavailable: this is a local planning estimate, not a
+billing meter. See the repository README's usage estimates section for counting
+limitations.

@@ -20,6 +20,7 @@ export interface ProJob {
   createdAt: string;
   updatedAt: string;
   conversationId?: string;
+  submissionAttemptedAt?: string;
   answer?: string;
   lastError?: string;
   lastPollAt?: string;

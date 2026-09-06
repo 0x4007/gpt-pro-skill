@@ -1,6 +1,7 @@
 import { createContext, runInContext } from "node:vm";
 import { ensurePrivateState, stateDirectory } from "./state.ts";
 import { JobStore, POLL_WINDOW_MS, type ProJob } from "./jobs.ts";
+import { reportUsage, usageForAccount } from "./usage.ts";
 
 type JsonObject = Record<string, any>;
 
@@ -1350,6 +1351,7 @@ async function submitConversation(
   }
 
   job.status = "submitting";
+  job.submissionAttemptedAt = new Date().toISOString();
   await store.save(job);
   const response = await session.fetch(
     `${CHATGPT_ORIGIN}/backend-api/f/conversation`,
@@ -1438,6 +1440,25 @@ export async function captureConversation(
   }
 }
 
+function accountIdForSession(session: WebSession): string {
+  if (session.headers["chatgpt-account-id"]) {
+    return session.headers["chatgpt-account-id"];
+  }
+  try {
+    const claims = JSON.parse(
+      atob(
+        session.accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"),
+      ),
+    );
+    return typeof claims["https://api.openai.com/auth"]?.chatgpt_account_id ===
+        "string"
+      ? claims["https://api.openai.com/auth"].chatgpt_account_id
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 async function accountIdentity(session: WebSession): Promise<string> {
   const parts = session.accessToken.split(".");
   let claims: JsonObject;
@@ -1465,30 +1486,43 @@ export async function submitJob(
   const auth = await loadWebSession(new URL("../", store.directory));
   const job = await store.create(prompt, await accountIdentity(auth));
   onCreated?.(job);
-  return await store.withLock(job.id, async (current) => {
+  try {
+    // Cached advisory lookup only; it never creates a model conversation.
     try {
-      await submitConversation(new ChatSession(auth), current, store);
-    } catch (error) {
-      if (current.conversationId) {
-        current.status = "pending";
-        current.lastError =
-          "Initial stream interrupted; retrieve the existing conversation";
-      } else {
-        if (current.status !== "failed") {
-          current.status = current.status === "preparing"
-            ? "failed"
-            : "uncertain";
-        }
-        current.lastError ??= current.status === "uncertain"
-          ? "Submission outcome unknown; do not resubmit automatically"
-          : "Preparation failed before submission";
-        await store.save(current);
-        throw new Error(current.lastError + "; job " + current.id);
-      }
+      await usageForAccount(store, job.account, {
+        session: new ChatSession(auth),
+        accountId: accountIdForSession(auth),
+      });
+    } catch {
+      /* An unavailable estimate must not block the requested query. */
     }
-    await store.save(current);
-    return current;
-  });
+    return await store.withLock(job.id, async (current) => {
+      try {
+        await submitConversation(new ChatSession(auth), current, store);
+      } catch (error) {
+        if (current.conversationId) {
+          current.status = "pending";
+          current.lastError =
+            "Initial stream interrupted; retrieve the existing conversation";
+        } else {
+          if (current.status !== "failed") {
+            current.status = current.status === "preparing"
+              ? "failed"
+              : "uncertain";
+          }
+          current.lastError ??= current.status === "uncertain"
+            ? "Submission outcome unknown; do not resubmit automatically"
+            : "Preparation failed before submission";
+          await store.save(current);
+          throw new Error(current.lastError + "; job " + current.id);
+        }
+      }
+      await store.save(current);
+      return current;
+    });
+  } finally {
+    await reportUsage(store, job.account);
+  }
 }
 
 export async function resultForJob(
@@ -1496,6 +1530,7 @@ export async function resultForJob(
   store = new JobStore(),
 ): Promise<string> {
   return await store.withLock(id, async (job) => {
+    await reportUsage(store, job.account);
     if (job.status === "completed") {
       return requiredString(job.answer, "Saved answer");
     }
@@ -1577,7 +1612,12 @@ export async function main(args: string[]): Promise<void> {
   }
   if (command === "--auth-check") {
     if (args.length !== 1) throw new Error("--auth-check takes no arguments");
-    const session = new ChatSession(await loadWebSession(directory));
+    const auth = await loadWebSession(directory);
+    const session = new ChatSession(auth);
+    await reportUsage(store, await accountIdentity(auth), {
+      session,
+      accountId: accountIdForSession(auth),
+    });
     const response = await session.fetch(
       CHATGPT_ORIGIN + "/backend-api/models",
       { signal: AbortSignal.timeout(30000) },
@@ -1596,13 +1636,19 @@ export async function main(args: string[]): Promise<void> {
   }
   if (command === "--jobs") {
     if (args.length !== 1) throw new Error("--jobs takes no arguments");
-    console.log(JSON.stringify((await store.list()).map(jobSummary)));
+    const jobs = await store.list();
+    for (const account of new Set(jobs.map((job) => job.account))) {
+      await reportUsage(store, account);
+    }
+    console.log(JSON.stringify(jobs.map(jobSummary)));
     return;
   }
   if (command === "--status" || command === "--result") {
     if (args.length !== 2) throw new Error(command + " requires one job ID");
     if (command === "--status") {
-      console.log(JSON.stringify(jobSummary(await store.read(args[1]))));
+      const job = await store.read(args[1]);
+      await reportUsage(store, job.account);
+      console.log(JSON.stringify(jobSummary(job)));
     } else console.log(await resultForJob(args[1], store));
     return;
   }
