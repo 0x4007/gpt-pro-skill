@@ -44,18 +44,28 @@ onboarding. Use your own account with access to `gpt-6-pro`.
 
 ## Research routing
 
-The skill supports explicit GPT Pro requests and deep/substantial research. It
-uses the GPT Pro conversation workflow, not ChatGPT's separate Deep Research
-product mode. Ask for primary-source URLs and verify important claims. Keep
-Perplexity or another research tool as a fallback if Pro is unavailable.
+The skill requires an explicit user request for GPT Pro. Generic research, deep
+research, planning, reviews, and stalled work do not trigger it.
+`allow_implicit_invocation: false` disables automatic skill selection in Codex.
+It uses the GPT Pro conversation workflow, not ChatGPT's separate Deep Research
+product mode. Ask for primary-source URLs and verify important claims.
 
 Installing the skill does not edit another developer's global instructions. For
 the same preferred routing, add this optional rule to your own AGENTS.md:
 
-> Use gpt-pro for explicit Pro requests and substantial/deep research. Follow
-> topic-specific official-documentation guidance first. Use background jobs,
-> retain job IDs, verify important cited sources, and keep Perplexity as a
-> fallback. Honor explicit user tool choices and existing call budgets.
+> Use gpt-pro only when the user explicitly requests GPT Pro. One request
+> permits one submission unless the user specifies a larger budget. Follow-up
+> calls need explicit authorization or remaining batch allowance. Recurring use
+> needs a maximum call count and end time. Reuse saved jobs and completed
+> answers, keep one pending job by default, and do not submit extra probes
+> during throttling. Use official documentation, manual search, or another
+> authorized research tool for ordinary research. Retain authorization, call
+> count, and job ID in handoffs.
+
+These are agent workflow rules, not an account-wide runtime enforcement layer.
+The CLI cannot establish user intent. Existing sessions must load the new rules;
+older unbounded recurring instructions need a bounded replacement before their
+next submission. Retrieval of an already authorized job remains allowed.
 
 ## Command reference
 
@@ -91,7 +101,8 @@ deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=cha
   "$SKILL_DIR/scripts/ask-gpt-pro.ts" "<complex question>"
 ```
 
-For several questions, submit each in background mode. Each command prints its
+For an explicitly authorized batch, submit each question in background mode.
+Otherwise combine related questions into one submission. Each command prints its
 job ID on stderr immediately, then a JSON job summary on stdout after the server
 hands off generation. Save those IDs before proceeding.
 
