@@ -26,6 +26,18 @@ Check saved jobs and reuse relevant completed answers before submitting. By
 default, keep one pending Pro job across sessions sharing the private state;
 multiple concurrent submissions require the user's explicit batch budget.
 
+Read the `GPT Pro usage estimate` on stderr. If its `nudge` is non-null, gently
+mention the local pace estimate in your next user update, once per update;
+suggest spacing optional requests and reusing results. Never present this as
+OpenAI's remaining quota or actual reset date. The planning week is local,
+starts at the earliest saved attempt, and excludes manual ChatGPT use, other
+installations, deleted jobs, and other models sharing the allowance. Attempts
+can include rejected submissions. Polling does not consume a new local attempt.
+Unknown plans have no guessed allowance. Subscription data can be stale;
+`--auth-check` refreshes an expired six-hour cache without a model submission.
+Advice is not permission for extra calls or a reason to deny an already
+authorized request. An HTTP 429 can be a separate retrieval throttle.
+
 This sends a `gpt-6-pro` conversation through Deno, not ChatGPT's separate Deep
 Research product mode. Request primary sources, dates, citations, and
 uncertainties, then verify important cited claims with source retrieval. Do not
@@ -42,7 +54,7 @@ Current status: working experimental integration, verified on 2026-09-05. The
 normal CLI and two concurrent jobs completed successfully. An official
 GitHub-installed copy ran outside the repository and completed research with
 verified `gpt-6-pro` metadata, exact message matching, and three `web.run`
-calls. All 31 offline tests pass. See
+calls. All 35 offline tests pass. See
 [sanitized findings](diagnostics/README.md) for the earlier failures,
 corrections, and acceptance evidence. Six-hour waits are covered by
 simulated-clock tests, not a six-hour live soak test. Session refresh remains

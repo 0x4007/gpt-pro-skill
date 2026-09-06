@@ -67,6 +67,41 @@ The CLI cannot establish user intent. Existing sessions must load the new rules;
 older unbounded recurring instructions need a bounded replacement before their
 next submission. Retrieval of an already authorized job remains allowed.
 
+## Usage estimates
+
+The CLI prints a structured usage estimate on stderr during submission,
+authentication checks, and job inspection or retrieval. Answer text and JSON on
+stdout stay unchanged. Personal Pro $200 and Pro $100 subscriptions are detected
+from the authenticated account; other plans report an unknown allowance. The
+published allowances verified on September 6, 2026 are 200 GPT-6 Pro messages
+per week for Pro $200, and 50 per week shared with Sol Pro for Pro $100. See
+[OpenAI's model limits](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt).
+These published limits can change.
+
+The estimate counts saved submission attempts, including uncertain or rejected
+attempts, not confirmed billed messages. Polling and cached rereads add no
+attempts. Manual ChatGPT use, other installations, deleted jobs, and other
+models sharing an allowance are not counted. There is no provider-reported
+remaining balance or Pro reset date. The **local planning week** starts at the
+earliest saved attempt and repeats every seven days; it is not the provider's
+quota week.
+
+After the first 24 hours, usage ahead of a linear weekly pace produces a gentle
+advisory. For example, 30 local attempts after 24 hours on the 200/week tier
+exceed the expected 28.57 and project to 210/week. Reaching the local allowance
+also produces an advisory during the first day. Agents should mention a new
+advisory once in their next update, avoid repeated reminders in that update, and
+suggest spacing optional requests or reusing saved answers. The estimate never
+blocks an authorized request and does not replace explicit invocation rules.
+
+Subscription checks use one read-only account request, cached for six hours in
+an owner-only, account-isolated file beside the jobs directory. Concurrent
+checks share a lock. A recent recorded HTTP 429 suppresses an extra tier lookup.
+Existing `--auth-check` can populate or refresh an expired cache without a model
+submission; status and cached-result reads use only local data. An empty job
+list has no account estimate. Stale or unavailable subscription data is labeled.
+HTTP retrieval throttles are separate from model message allowances.
+
 ## Command reference
 
 | Command                                     | Result                                                      |
@@ -191,7 +226,7 @@ deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts
 deno fmt --check README.md .agents/skills/gpt-pro/
 ```
 
-All 31 offline tests pass. Live verification covers the normal CLI, two
+All 35 offline tests pass. Live verification covers the normal CLI, two
 concurrent jobs, offline cached rereads, and a GitHub-installed copy running
 outside the repository. The installed copy completed a source-backed research
 request with verified `gpt-6-pro` metadata, exact message matching, and three
