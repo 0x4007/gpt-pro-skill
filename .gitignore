@@ -1,9 +1,7 @@
-*.har
 .env
 .env.*
 auth.json
-.DS_Store
-
-.diagnostics/
-
 .gpt-pro-jobs/
+.diagnostics/
+*.har
+.DS_Store

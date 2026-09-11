@@ -1,5 +1,4 @@
 import { stateDirectory } from "./state.ts";
-// Private local job state. Never store bearer tokens, cookies, or Sentinel data.
 export const POLL_WINDOW_MS = 6 * 60 * 60 * 1000;
 export type JobStatus =
   | "preparing"
@@ -102,7 +101,6 @@ export class JobStore {
     ) throw new Error("Invalid GPT Pro job record");
     return job;
   }
-  // Call under withLock. Rename makes a complete snapshot visible to --jobs.
   async save(job: ProJob): Promise<void> {
     job.updatedAt = new Date().toISOString();
     const temporary = this.path(job.id, `.${crypto.randomUUID()}.tmp`);
@@ -141,7 +139,6 @@ export class JobStore {
       mode: 0o600,
     });
     try {
-      // OS releases the lock after process death; no stale PID-file recovery.
       await file.lock(true);
       return await action(await this.read(id));
     } finally {

@@ -204,7 +204,7 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
           },
         },
       );
-    } catch { /* Resume from disk below. */ }
+    } catch {}
     const resumed = await store.read(job.id);
     if (
       resumed.rateLimitCount !== 1 ||
@@ -266,7 +266,7 @@ Deno.test("saved cooldown beyond the poll window makes no request", async () => 
         },
       },
     );
-  } catch { /* Expected resumable timeout. */ }
+  } catch {}
   if (
     calls !== 0 || clock !== POLL_WINDOW_MS || job.status !== "timed_out" ||
     Date.parse(job.nextPollAt) !== POLL_WINDOW_MS * 2

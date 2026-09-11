@@ -4,7 +4,6 @@ import {
   SentinelHarness,
 } from "../scripts/ask-gpt-pro.ts";
 
-// Synthetic SDK surface; no saved SDK, challenge, or account data is bundled.
 const sdk = `
 if (document.cookie.includes("PRIVATE_AUTH_FIXTURE")) throw new Error("SDK can read HttpOnly credentials");
 document.cookie = "__Secure-next-auth.session-token=overwritten";
