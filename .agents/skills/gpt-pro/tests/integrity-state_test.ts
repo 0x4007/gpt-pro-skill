@@ -1,6 +1,5 @@
 import { ChatSession, clientObservation } from "../scripts/ask-gpt-pro.ts";
 
-// Synthetic protocol fixtures only; these are not server-issued credentials.
 const states = [
   "ois1.fixture.AAAAAAAAAAAAAAAA.signature",
   "ois1.fixture.BBBBBBBBBBBBBBBB.signature",

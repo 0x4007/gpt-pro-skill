@@ -17,7 +17,6 @@ type Fetcher = {
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
 };
 
-// Select the authenticated account, never another workspace's subscription.
 export function subscriptionPlan(body: unknown, accountId: string): Plan {
   if (!body || typeof body !== "object") return "unknown";
   const accounts = (body as Record<string, unknown>).accounts;
@@ -122,7 +121,6 @@ function decodeSubscription(value: unknown): Subscription | undefined {
     !["detected", "unavailable"].includes(v.lookup) ||
     typeof v.checkedAt !== "string" || !Number.isFinite(Date.parse(v.checkedAt))
   ) return undefined;
-  // Only allowlisted fields leave the private cache.
   return { version: 1, plan: v.plan, lookup: v.lookup, checkedAt: v.checkedAt };
 }
 
@@ -159,7 +157,7 @@ async function fetchSubscription(
         lookup: "detected",
       };
     }
-  } catch { /* Usage advice must not prevent authorized work. */ }
+  } catch {}
   return { version: 1, checkedAt, plan: "unknown", lookup: "unavailable" };
 }
 
@@ -169,7 +167,6 @@ export async function usageForAccount(
   live?: { session: Fetcher; accountId: string },
 ) {
   const jobs = await store.list();
-  // Account identities are SHA-256 digests; never put raw account IDs in paths.
   if (!/^[a-f0-9]{64}$/.test(account)) {
     return estimateUsage(jobs, account, undefined);
   }
@@ -223,11 +220,10 @@ export async function usageForAccount(
         } finally {
           try {
             await Deno.remove(temporary);
-          } catch { /* Renamed or not created. */ }
+          } catch {}
         }
       }
     } catch {
-      // Read-only auth checks can detect a tier without permission to cache it.
       if (!snapshot && !lock) {
         snapshot = await fetchSubscription(live.session, live.accountId);
       }

@@ -1,7 +1,6 @@
 import { isAbsolute, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// Keep credentials and jobs outside versioned skill/plugin installation folders.
 export function stateDirectory(explicit?: string): URL {
   if (explicit !== undefined && !isAbsolute(explicit)) {
     throw new Error("--state-dir must be an absolute path");

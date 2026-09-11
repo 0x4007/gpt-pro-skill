@@ -39,7 +39,6 @@ export function clientObservation(cookieHeader: string): string {
   if (
     !isIntegrityState(state) || !/^[A-Za-z0-9_-]{16}$/.test(state.split(".")[2])
   ) return "v1.s.i";
-  // The nonce describes observed integrity state; it is not a random trace ID.
   return `v1.s.${values.length > 1 ? "d" : "p"}.${state.split(".")[2]}`;
 }
 
@@ -62,7 +61,6 @@ function safeResponseSummary(body: string): string {
     const detail = typeof parsed.detail === "string" ? parsed.detail : null;
     if (detail) return redactSensitiveText(detail).slice(0, 500);
   } catch {
-    // Fall through to a bounded, redacted text response.
   }
   return redactSensitiveText(body.replace(/\s+/g, " ").trim()).slice(0, 500);
 }
@@ -153,8 +151,6 @@ class CookieJar {
       }
     }
     const update = response.headers.get("x-oai-is-update");
-    // Match the browser's compare-and-set rule: a late response must not
-    // overwrite state already rotated by another response or Set-Cookie.
     if (
       update !== null && isIntegrityState(update) &&
       this.integrityState() === expectedIntegrityState
@@ -197,7 +193,6 @@ export function parseWebSession(
   envText: string,
   allowExpired = false,
 ): WebSession {
-  // This is one approved JSON credential field, not a general dotenv loader.
   const lines = envText.split(/\r?\n/).filter((line) =>
     /^CHATGPT_WEB_SESSION=/.test(line)
   );
@@ -261,7 +256,6 @@ export function parseWebSession(
     ) throw new Error();
     session = { accessToken, cookie, headers: clean };
   } catch {
-    // Parser and Headers errors can contain the credential value.
     throw new Error(
       "Invalid CHATGPT_WEB_SESSION structure, headers, or cookie binding",
     );
@@ -319,7 +313,6 @@ export function parseSessionImport(text: string): WebSession {
     }
     return parseWebSession("CHATGPT_WEB_SESSION=" + JSON.stringify(value));
   }
-  // Accept DevTools Copy request headers, never execute copied cURL or JS.
   const headers: Record<string, string> = {};
   let accessToken = "", cookie = "";
   for (const line of text.split(/\r?\n/)) {
@@ -939,7 +932,6 @@ export class SentinelHarness {
     );
 
     bindProof(requirements, proof);
-    // Use the public SDK method: the low-level generator omits protocol framing.
     const finalProof = requiredString(
       await withTimeout(
         Promise.resolve(engine.getEnforcementToken(requirements)),
@@ -1040,8 +1032,6 @@ export function answerForMessage(
   messageId: string,
 ): string | undefined {
   const mapping = assertRecord(conversation.mapping, "Conversation mapping");
-  // Other turns can advance current_node while this job is pending. Search all
-  // completed finals, but accept only an unambiguous answer for this user turn.
   const answers = new Set<string>();
   for (const node of Object.values(mapping)) {
     const message = node?.message;
@@ -1095,7 +1085,6 @@ export async function pollJob(
   job.status = "pending";
   await save(job);
   while (now() < deadline) {
-    // Keep server and local backoff across process interruption and --result.
     const nextPollAt = Date.parse(job.nextPollAt ?? "");
     if (nextPollAt > now()) {
       await sleep(Math.min(nextPollAt - now(), deadline - now()));
@@ -1162,7 +1151,6 @@ export async function pollJob(
         retryable = true;
       }
     } catch {
-      // A read failure is safe to retry. Never repeat the conversation POST.
       job.lastError =
         "Conversation retrieval interrupted; retrying the existing job";
       retryable = true;
@@ -1241,7 +1229,6 @@ export function parseSseText(raw: string): ParsedSse {
         }
         appendAssistantValue(parsed, messages, fallback);
       } catch {
-        // Ignore the protocol's non-JSON encoding marker and malformed keepalives.
       }
     }
     event = "message";
@@ -1512,15 +1499,12 @@ export async function submitJob(
   const job = await store.create(prompt, await accountIdentity(auth));
   onCreated?.(job);
   try {
-    // Cached advisory lookup only; it never creates a model conversation.
     try {
       await usageForAccount(store, job.account, {
         session: new ChatSession(auth),
         accountId: accountIdForSession(auth),
       });
-    } catch {
-      /* An unavailable estimate must not block the requested query. */
-    }
+    } catch {}
     return await store.withLock(job.id, async (current) => {
       try {
         await submitConversation(new ChatSession(auth), current, store);

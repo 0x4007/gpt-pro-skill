@@ -284,7 +284,7 @@ Deno.test("timed-out auth lock never enters renewal after the holder releases", 
     if (release !== undefined) clearTimeout(release);
     try {
       holder.close();
-    } catch { /* Already released. */ }
+    } catch {}
     await Deno.remove(dir, { recursive: true });
   }
 });

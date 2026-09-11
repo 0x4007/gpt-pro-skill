@@ -100,8 +100,6 @@ async function authFetch(
   return response;
 }
 
-// No model requests. The existing server-issued session cookie is the root of
-// authentication; client metadata and a new client session UUID are not secrets.
 export async function sessionFromCookies(
   cookie: string,
   userAgent: string,
@@ -216,7 +214,7 @@ async function withAuthLock<T>(
     clearTimeout(timer);
     try {
       file.close();
-    } catch { /* Lock timeout already closed it. */ }
+    } catch {}
   }
 }
 
@@ -369,7 +367,6 @@ async function candidates(): Promise<BrowserProfile[]> {
             break;
           } catch (error) {
             if (error instanceof Deno.errors.PermissionDenied) throw error;
-            // Missing/locked/unsupported profiles are not modified or copied.
           }
         }
       }
@@ -418,7 +415,7 @@ async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
   const timer = setTimeout(() => {
     try {
       child.kill();
-    } catch { /* Already exited. */ }
+    } catch {}
   }, 60000);
   const output = await child.output().finally(() => clearTimeout(timer));
   if (!output.success) {
@@ -476,7 +473,6 @@ export async function authenticate(directory: URL): Promise<void> {
     }
     selected = profiles[index];
   }
-  // Obtain OS consent before the short state lock; never change browser state.
   const session = await nativeSession(selected);
   await withAuthLock(
     directory,
@@ -510,7 +506,6 @@ if (import.meta.main) {
     }
     await authenticate(directory);
   } catch (error) {
-    // Native SQLite, Keychain, JSON and HTTP exceptions can include private data.
     console.error(
       error instanceof Error && error.message.startsWith("Requires")
         ? "Authentication needs local read, Keychain execution, and chatgpt.com network permissions"
