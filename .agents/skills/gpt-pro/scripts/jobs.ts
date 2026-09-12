@@ -22,20 +22,52 @@ export interface ProJob {
 }
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const statuses = new Set(["preparing", "submitting", "pending", "completed", "failed", "uncertain", "timed_out"]);
+
+function isOptionalRateLimitCount(value: unknown): boolean {
+  if (value === undefined) return true;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isOptionalPollTimestamp(value: unknown): boolean {
+  if (value === undefined) return true;
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+// Job records are read back from disk as untrusted JSON, so the checks below run against an
+// unknown property bag rather than against the `ProJob` shape they are validating. Reading the
+// same fields in the same order keeps a corrupt record failing exactly as it did before.
+function isJobRecord(value: unknown, id: string): value is ProJob {
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    record.id === id &&
+    typeof record.messageId === "string" &&
+    ID.test(record.messageId) &&
+    record.model === "gpt-6-pro" &&
+    typeof record.status === "string" &&
+    statuses.has(record.status) &&
+    typeof record.account === "string" &&
+    typeof record.prompt === "string" &&
+    Number.isFinite(record.pollCount) &&
+    isOptionalRateLimitCount(record.rateLimitCount) &&
+    isOptionalPollTimestamp(record.nextPollAt)
+  );
+}
+
 export class JobStore {
   constructor(readonly directory = new URL(".gpt-pro-jobs/", stateDirectory())) {}
-  private path(id: string, suffix = ".json"): URL {
+  private _path(id: string, suffix = ".json"): URL {
     if (!ID.test(id)) throw new Error("Invalid GPT Pro job ID");
     return new URL(id + suffix, this.directory);
   }
-  private async initialize(): Promise<void> {
+  private async _initialize(): Promise<void> {
     await Deno.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const info = await Deno.lstat(this.directory);
     if (!info.isDirectory || info.isSymlink || (info.mode !== null && (info.mode & 0o077) !== 0))
       throw new Error("GPT Pro job directory must be owner-only (mode 0700)");
   }
   async create(prompt: string, account: string): Promise<ProJob> {
-    await this.initialize();
+    await this._initialize();
     const now = new Date().toISOString();
     const job: ProJob = {
       version: 1,
@@ -49,40 +81,28 @@ export class JobStore {
       updatedAt: now,
       pollCount: 0,
     };
-    await Deno.writeTextFile(this.path(job.id), JSON.stringify(job, null, 2), {
+    await Deno.writeTextFile(this._path(job.id), JSON.stringify(job, null, 2), {
       createNew: true,
       mode: 0o600,
     });
     return job;
   }
   async read(id: string): Promise<ProJob> {
-    const path = this.path(id);
+    const path = this._path(id);
     const info = await Deno.lstat(path);
     if (!info.isFile || info.isSymlink || (info.mode !== null && (info.mode & 0o077) !== 0)) throw new Error("GPT Pro job file must be owner-only (mode 0600)");
-    let job: ProJob;
+    let value: unknown;
     try {
-      job = JSON.parse(await Deno.readTextFile(path));
+      value = JSON.parse(await Deno.readTextFile(path));
     } catch {
       throw new Error("Could not decode GPT Pro job record");
     }
-    if (
-      job.version !== 1 ||
-      job.id !== id ||
-      !ID.test(job.messageId) ||
-      job.model !== "gpt-6-pro" ||
-      !statuses.has(job.status) ||
-      typeof job.account !== "string" ||
-      typeof job.prompt !== "string" ||
-      !Number.isFinite(job.pollCount) ||
-      (job.rateLimitCount !== undefined && (!Number.isSafeInteger(job.rateLimitCount) || job.rateLimitCount < 0)) ||
-      (job.nextPollAt !== undefined && (typeof job.nextPollAt !== "string" || !Number.isFinite(Date.parse(job.nextPollAt))))
-    )
-      throw new Error("Invalid GPT Pro job record");
-    return job;
+    if (!isJobRecord(value, id)) throw new Error("Invalid GPT Pro job record");
+    return value;
   }
   async save(job: ProJob): Promise<void> {
     job.updatedAt = new Date().toISOString();
-    const temporary = this.path(job.id, `.${crypto.randomUUID()}.tmp`);
+    const temporary = this._path(job.id, `.${crypto.randomUUID()}.tmp`);
     const file = await Deno.open(temporary, {
       createNew: true,
       write: true,
@@ -99,15 +119,15 @@ export class JobStore {
       file.close();
     }
     try {
-      await Deno.rename(temporary, this.path(job.id));
+      await Deno.rename(temporary, this._path(job.id));
     } catch (error) {
       await Deno.remove(temporary);
       throw error;
     }
   }
   async withLock<T>(id: string, action: (job: ProJob) => Promise<T>): Promise<T> {
-    await this.initialize();
-    const path = this.path(id, ".lock");
+    await this._initialize();
+    const path = this._path(id, ".lock");
     const file = await Deno.open(path, {
       create: true,
       read: true,
@@ -122,7 +142,7 @@ export class JobStore {
     }
   }
   async list(): Promise<ProJob[]> {
-    await this.initialize();
+    await this._initialize();
     const jobs: ProJob[] = [];
     for await (const entry of Deno.readDir(this.directory)) {
       if (entry.isFile && entry.name.endsWith(".json") && ID.test(entry.name.slice(0, -5))) jobs.push(await this.read(entry.name.slice(0, -5)));

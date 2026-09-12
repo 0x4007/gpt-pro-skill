@@ -5,8 +5,14 @@ import { loadWebSession, parseWebSession } from "../scripts/ask-gpt-pro.ts";
 
 const cookie = "__Secure-next-auth.session-token=fixture-session; oai-did=fixture-device; __Secure-oai-is=ois1.fixture.AAAAAAAAAAAAAAAA.signature";
 const html = '<html lang="en-US" data-build="prod-abcdef1234" data-seq="12345">';
-const token = (sub = "fixture-account", exp = 4102444800) => `e30.${btoa(JSON.stringify({ sub, exp }))}.fixture`;
-const encode = (value: unknown) => "CHATGPT_WEB_SESSION=" + JSON.stringify(value);
+function token(sub = "fixture-account", exp = 4102444800): string {
+  return `e30.${btoa(JSON.stringify({ sub, exp }))}.fixture`;
+}
+
+function encode(value: unknown): string {
+  return "CHATGPT_WEB_SESSION=" + JSON.stringify(value);
+}
+
 function fixture(exp = 4102444800) {
   return {
     accessToken: token("fixture-account", exp),
@@ -25,6 +31,8 @@ function fixture(exp = 4102444800) {
 
 Deno.test("native cookie decryption validates encryption and domain binding", () => {
   const key = new Uint8Array(16).fill(42);
+  // AES-128-CBC with a fixed space IV and a v10 prefix is Chromium's own cookie
+  // protection scheme, so the fixture must use it to be readable by decryptCookie.
   const cipher = createCipheriv("aes-128-cbc", key, new Uint8Array(16).fill(32));
   const encrypted = Buffer.concat([
     Buffer.from("v10"),
@@ -66,13 +74,14 @@ Deno.test("cookie renewal removes expired chunks and preserves unrelated duplica
 
 Deno.test("fresh bootstrap uses only first-party HTTP and real page metadata", async () => {
   const paths: string[] = [];
-  const fetcher: typeof fetch = (input, init) => {
+  function fetcher(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const request = new Request(input, init);
     paths.push(request.url);
-    if (request.redirect !== "error" || request.headers.has("authorization") || !request.headers.get("cookie")?.includes("fixture-session"))
+    if (request.redirect !== "error" || request.headers.has("authorization") || !request.headers.get("cookie")?.includes("fixture-session")) {
       throw new Error("Incorrect bootstrap boundary");
+    }
     return Promise.resolve(paths.length === 1 ? Response.json({ accessToken: token() }) : new Response(html));
-  };
+  }
   const session = await sessionFromCookies(cookie, "fixture-agent", undefined, fetcher);
   if (paths.join(" ") !== "https://chatgpt.com/api/auth/session https://chatgpt.com/") throw new Error("Unexpected network request");
   if (session.headers["oai-client-build-number"] !== "12345" || session.headers["oai-device-id"] !== "fixture-device")
@@ -86,12 +95,11 @@ Deno.test("renewal rejects account changes and throttling without retries", asyn
   for (const response of [Response.json({ accessToken: token("another-account") }), new Response("PRIVATE_FIXTURE", { status: 429 })]) {
     let calls = 0;
     let rejected = false;
-    const fetcher: typeof fetch = () => {
-      calls++;
-      return Promise.resolve(response);
-    };
     try {
-      await sessionFromCookies(cookie, "fixture-agent", fixture(), fetcher);
+      await sessionFromCookies(cookie, "fixture-agent", fixture(), () => {
+        calls++;
+        return Promise.resolve(response);
+      });
     } catch (error) {
       rejected = true;
       if (String(error).includes("PRIVATE_FIXTURE")) {
@@ -142,7 +150,8 @@ Deno.test("expired session renews once across concurrent loaders and persists ro
       if (session.accessToken !== token() || !session.cookie.includes("=rotated")) throw new Error("Renewal did not persist");
     }
     parseWebSession(await Deno.readTextFile(path));
-    if (((await Deno.stat(path)).mode! & 0o077) !== 0) {
+    const mode = (await Deno.stat(path)).mode;
+    if (mode !== null && (mode & 0o077) !== 0) {
       throw new Error("Credential permissions changed");
     }
   } finally {
@@ -193,8 +202,12 @@ Deno.test("timed-out auth lock never enters renewal after the holder releases", 
   const originalFetch = globalThis.fetch;
   const originalTimeout = globalThis.setTimeout;
   let requests = 0;
-  let timeoutObserved = false;
-  let release: ReturnType<typeof setTimeout> | undefined;
+  // The flag is held on an object so control flow analysis does not narrow it to `false`;
+  // only the patched timer callback below ever sets it.
+  const observed = { timedOut: false };
+  // The teardown handle is held on an object so its type is taken from the ambient timer
+  // declaration instead of an explicit union, which the lint project resolves to `any`.
+  const teardown: { release?: ReturnType<typeof setTimeout> } = {};
   globalThis.fetch = () => {
     requests++;
     return Promise.resolve(new Response("{}"));
@@ -202,9 +215,11 @@ Deno.test("timed-out auth lock never enters renewal after the holder releases", 
   globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
     if (delay === 30000) {
       return originalTimeout(() => {
-        timeoutObserved = true;
+        observed.timedOut = true;
         callback(...args);
-        release = originalTimeout(() => holder.close(), 20);
+        teardown.release = originalTimeout(() => {
+          holder.close();
+        }, 20);
       }, 10);
     }
     return originalTimeout(callback, delay, ...args);
@@ -216,13 +231,13 @@ Deno.test("timed-out auth lock never enters renewal after the holder releases", 
     } catch {
       rejected = true;
     }
-    if (!timeoutObserved || !rejected || requests !== 0) {
+    if (!observed.timedOut || !rejected || requests !== 0) {
       throw new Error("Timed-out waiter entered renewal");
     }
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.setTimeout = originalTimeout;
-    if (release !== undefined) clearTimeout(release);
+    if (teardown.release !== undefined) clearTimeout(teardown.release);
     try {
       holder.close();
     } catch {}

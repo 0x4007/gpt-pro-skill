@@ -43,24 +43,27 @@ Deno.test("six-hour polling expires without submitting and can resume the same j
   const job = fixture();
   let clock = 0,
     calls = 0;
+  const conversationId = job.conversationId;
+  if (conversationId === undefined) throw new Error("Fixture job has no conversation ID");
   const fetcher = {
-    fetch: async (input: string | URL, init?: RequestInit) => {
+    fetch: (input: string | URL, init?: RequestInit): Promise<Response> => {
       calls++;
       if (init?.method && init.method !== "GET") {
         throw new Error("Unexpected mutation");
       }
-      if (!String(input).endsWith(job.conversationId!)) {
+      if (!String(input).endsWith(conversationId)) {
         throw new Error("Wrong conversation");
       }
-      return Response.json({ mapping: {} });
+      return Promise.resolve(Response.json({ mapping: {} }));
     },
   };
   let timedOut = false;
   try {
     await pollJob(fetcher, job, async () => {}, {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         clock += ms;
+        return Promise.resolve();
       },
     });
   } catch {
@@ -102,9 +105,10 @@ Deno.test("transient GET failures honor Retry-After; auth failures preserve resu
     async () => {},
     {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         delays.push(ms);
         clock += ms;
+        return Promise.resolve();
       },
     }
   );
@@ -142,9 +146,10 @@ Deno.test("repeated 429s back off without Retry-After and reset after recovery",
     async () => {},
     {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         delays.push(ms);
         clock += ms;
+        return Promise.resolve();
       },
     }
   );
@@ -202,9 +207,10 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
       (value) => store.save(value),
       {
         now: () => clock,
-        sleep: async (ms) => {
+        sleep: (ms) => {
           delays.push(ms);
           clock += ms;
+          return Promise.resolve();
         },
       }
     );
@@ -233,8 +239,9 @@ Deno.test("saved cooldown beyond the poll window makes no request", async () => 
       async () => {},
       {
         now: () => clock,
-        sleep: async (ms) => {
+        sleep: (ms) => {
           clock += ms;
+          return Promise.resolve();
         },
       }
     );
@@ -257,8 +264,9 @@ Deno.test("stream capture persists an early conversation ID before an interrupte
   });
   let failed = false;
   try {
-    await captureConversation(new Response(stream), async (id) => {
+    await captureConversation(new Response(stream), (id) => {
       saved = id;
+      return Promise.resolve();
     });
   } catch {
     failed = true;
@@ -269,28 +277,30 @@ Deno.test("stream capture persists an early conversation ID before an interrupte
 });
 
 Deno.test("handoff closes the stream without waiting for terminal response", async () => {
-  let cancelled = false,
-    saved = "";
+  const cancelCalls: boolean[] = [];
+  let saved = "";
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new TextEncoder().encode('data: {"type":"stream_handoff","conversation_id":"fixture-conversation"}\n\n'));
     },
     cancel() {
-      cancelled = true;
+      cancelCalls.push(true);
     },
   });
-  await captureConversation(new Response(stream), async (id) => {
+  await captureConversation(new Response(stream), (id) => {
     saved = id;
+    return Promise.resolve();
   });
-  if (!cancelled || saved !== "fixture-conversation") {
+  if (cancelCalls.length !== 1 || saved !== "fixture-conversation") {
     throw new Error("Handoff did not detach safely");
   }
 });
 
 Deno.test("answer matching survives a later turn and rejects ambiguous or wrong-model finals", () => {
   const job = fixture();
-  const value: any = conversation(job);
-  value.mapping.later = {
+  const value = conversation(job);
+  const nodes: Record<string, unknown> = value.mapping;
+  nodes.later = {
     parent: "answer",
     message: { id: "later-user", author: { role: "user" } },
   };
@@ -298,12 +308,13 @@ Deno.test("answer matching survives a later turn and rejects ambiguous or wrong-
   if (answerForMessage(value, job.messageId) !== "fixture-answer") {
     throw new Error("Later turn hid the matching answer");
   }
-  value.mapping.alternative = structuredClone(value.mapping.answer);
-  value.mapping.alternative.message.content.parts = ["different-answer"];
+  const alternative = structuredClone(value.mapping.answer);
+  alternative.message.content.parts = ["different-answer"];
+  nodes.alternative = alternative;
   if (answerForMessage(value, job.messageId) !== undefined) {
     throw new Error("Ambiguous result accepted");
   }
-  delete value.mapping.alternative;
+  delete nodes.alternative;
   value.mapping.answer.message.metadata.model_slug = "other-model";
   if (answerForMessage(value, job.messageId) !== undefined) {
     throw new Error("Wrong model accepted");
@@ -374,8 +385,9 @@ Deno.test("failure to persist a completed answer is not hidden as a network retr
         },
       },
       job,
-      async () => {
+      () => {
         if (++saves === 2) throw new Error("disk full");
+        return Promise.resolve();
       }
     );
   } catch {
@@ -397,8 +409,9 @@ Deno.test("an answer arriving after 45 minutes is collected before the six-hour 
     async () => {},
     {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         clock += ms;
+        return Promise.resolve();
       },
     }
   );

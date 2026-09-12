@@ -71,7 +71,7 @@ Deno.test("late integrity updates cannot overwrite a completed rotation", async 
     },
   });
   session.cookies.set("__Secure-oai-is", states[0]);
-  const resolveResponses: Array<(response: Response) => void> = [];
+  const resolveResponses: ((response: Response) => void)[] = [];
   globalThis.fetch = () => new Promise((resolve) => resolveResponses.push(resolve));
   try {
     const slow = session.fetch("https://chatgpt.com/slow");

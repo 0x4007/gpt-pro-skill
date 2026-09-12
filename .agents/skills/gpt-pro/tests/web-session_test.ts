@@ -15,7 +15,9 @@ function fixture() {
     } as Record<string, string>,
   };
 }
-const encode = (value: unknown) => `CHATGPT_WEB_SESSION='${JSON.stringify(value)}'`;
+function encode(value: unknown): string {
+  return `CHATGPT_WEB_SESSION='${JSON.stringify(value)}'`;
+}
 
 Deno.test("web session preserves the approved snapshot through the HTTP boundary", async () => {
   const original = globalThis.fetch;
@@ -102,6 +104,8 @@ Deno.test("cross-origin requests never reach credential-bearing transport", asyn
   };
   try {
     const session = new ChatSession(parseWebSession(encode(fixture())));
+    // The cleartext origin is the point of the case: a same-host downgrade to http must be
+    // rejected before any credential-bearing request is made, so it stays insecure on purpose.
     for (const url of ["https://example.com/", "http://chatgpt.com/", "https://chatgpt.com.evil.example/"]) {
       let rejected = false;
       try {

@@ -7,6 +7,18 @@ const account = "a".repeat(64);
 function assert(value: unknown, message = "Assertion failed"): asserts value {
   if (!value) throw new Error(message);
 }
+// Estimates are rounded to two decimals, so a tolerance far below that step keeps these
+// assertions exact-value checks without comparing floating point numbers with === or !==.
+const ESTIMATE_TOLERANCE = 1e-9;
+function nearlyEqual(actual: number | null, expected: number): boolean {
+  return actual !== null && Math.abs(actual - expected) < ESTIMATE_TOLERANCE;
+}
+// Compares as `unknown` on purpose: some asserted values are typed as a single literal (a `null`
+// provider reset time, a request count the compiler already narrowed to 1), and these assertions
+// must stay real runtime checks instead of being dismissed as always true from the type alone.
+function equal(actual: unknown, expected: unknown): boolean {
+  return actual === expected;
+}
 function job(time = 0): ProJob {
   return {
     version: 1,
@@ -45,9 +57,10 @@ function body(plan = "pro", subscriptionPlan = "chatgptpro") {
 Deno.test("pacing uses published tier budgets and suppresses first-day noise", () => {
   const jobs = Array.from({ length: 30 }, () => job());
   const estimate = estimateUsage(jobs, account, subscription, DAY);
-  assert(estimate.expectedByNow === 28.57 && estimate.projectedWeeklyAttempts === 210);
+  assert(nearlyEqual(estimate.expectedByNow, 28.57) && estimate.projectedWeeklyAttempts === 210);
   assert(estimate.paceStatus === "above_pace" && estimate.nudge);
-  assert(estimate.providerResetAt === null);
+  // The estimator must keep reporting the provider reset time as unknown instead of guessing one.
+  assert(equal(estimate.providerResetAt, null));
   const lite = estimateUsage(
     jobs,
     account,
@@ -57,7 +70,7 @@ Deno.test("pacing uses published tier budgets and suppresses first-day noise", (
     },
     DAY
   );
-  assert(lite.weeklyAllowance === 50 && lite.expectedByNow === 7.14);
+  assert(lite.weeklyAllowance === 50 && nearlyEqual(lite.expectedByNow, 7.14));
   assert(estimateUsage(jobs, account, subscription, DAY - 1).nudge === null);
   assert(estimateUsage(jobs, account, undefined, DAY).weeklyAllowance === null);
   assert(
@@ -122,7 +135,7 @@ Deno.test("subscription cache serializes lookups, stores sanitized fields, and r
       },
     };
     const results = await Promise.all([usageForAccount(store, account, live), usageForAccount(store, account, live)]);
-    assert(requests === 1 && results.every((r) => r.plan === "pro_200"));
+    assert(equal(requests, 1) && results.every((r) => r.plan === "pro_200"));
     const cachePath = root + `/usage-${account}.json`;
     const cached = await Deno.readTextFile(cachePath);
     assert(!cached.includes("must-not-cache") && !cached.includes("fixture"));
@@ -132,7 +145,7 @@ Deno.test("subscription cache serializes lookups, stores sanitized fields, and r
     record.lastError = "HTTP 429";
     await store.save(record);
     await Deno.remove(cachePath);
-    assert((await usageForAccount(store, account, live)).plan === "unknown" && requests === 1);
+    assert((await usageForAccount(store, account, live)).plan === "unknown" && equal(requests, 1));
   } finally {
     await Deno.remove(root, { recursive: true });
   }

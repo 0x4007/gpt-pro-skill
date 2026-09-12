@@ -49,9 +49,9 @@ export function updateCookies(header: string, response: Response): string {
 }
 
 export function clientMetadata(html: string): { build: string; version: string } {
-  const root = html.match(/<html\s[^>]*>/i)?.[0] ?? "";
-  const build = root.match(/\bdata-seq="(\d+)"/)?.[1];
-  const version = root.match(/\bdata-build="(prod-[a-f0-9]+)"/)?.[1];
+  const root = /<html\s[^>]*>/i.exec(html)?.[0] ?? "";
+  const build = /\bdata-seq="(\d+)"/.exec(root)?.[1];
+  const version = /\bdata-build="(prod-[a-f0-9]+)"/.exec(root)?.[1];
   if (!build || !version) {
     throw new AuthenticationError("ChatGPT client metadata changed; authentication was not saved");
   }
@@ -71,7 +71,7 @@ async function authFetch(path: string, cookie: string, userAgent: string, fetche
   }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new AuthenticationError(`ChatGPT authentication returned HTTP ${response.status}; no automatic retry`);
+    throw new AuthenticationError(`ChatGPT authentication returned HTTP ${String(response.status)}; no automatic retry`);
   }
   return response;
 }
@@ -141,15 +141,17 @@ async function withAuthLock<T>(directory: URL, action: () => Promise<T>): Promis
     write: true,
     mode: 0o600,
   });
-  let timedOut = false;
+  // The deadline flag lives on an object because a plain `let` would be narrowed to
+  // `false` by control flow analysis, which cannot see the timer callback write to it.
+  const deadline = { expired: false };
   const timer = setTimeout(() => {
-    timedOut = true;
+    deadline.expired = true;
     file.close();
   }, 30000);
   try {
     await file.lock(true);
     clearTimeout(timer);
-    if (timedOut) {
+    if (deadline.expired) {
       throw new AuthenticationError("Authentication lock timed out; no renewal was attempted");
     }
     return await action();
@@ -180,7 +182,7 @@ async function verifyAndSave(session: WebSession, directory: URL): Promise<void>
   });
   await response.body?.cancel();
   if (!response.ok) {
-    throw new AuthenticationError(`ChatGPT authentication check returned HTTP ${response.status}; existing authentication was preserved`);
+    throw new AuthenticationError(`ChatGPT authentication check returned HTTP ${String(response.status)}; existing authentication was preserved`);
   }
   session.cookie = client.cookies.header();
   await importWebSession(JSON.stringify(session), directory);
@@ -215,6 +217,72 @@ export function decryptCookie(encrypted: Uint8Array, host: string, key: Uint8Arr
   }
 }
 
+type BrowserProduct = readonly [browser: string, folder: string, service: string, application: string];
+
+const BROWSER_PRODUCTS: readonly BrowserProduct[] = [
+  ["Brave", "BraveSoftware/Brave-Browser", "Brave Safe Storage", "Brave Browser.app"],
+  ["Chrome", "Google/Chrome", "Chrome Safe Storage", "Google Chrome.app"],
+  ["Chromium", "Chromium", "Chromium Safe Storage", "Chromium.app"],
+  ["Edge", "Microsoft Edge", "Microsoft Edge Safe Storage", "Microsoft Edge.app"],
+];
+
+const SESSION_COOKIE_QUERY =
+  "SELECT 1 FROM cookies WHERE host_key IN ('chatgpt.com','.chatgpt.com') AND (name='__Secure-next-auth.session-token' OR name='__Secure-next-auth.session-token.0') AND path='/' AND top_frame_site_key='' AND (is_persistent=0 OR expires_utc > ?) LIMIT 1";
+
+/** Chromium stores cookie expiries as microseconds since 1601-01-01. */
+function chromiumNow(): bigint {
+  return BigInt(Date.now()) * 1000n + 11644473600000000n;
+}
+
+async function databaseHasSession(database: string): Promise<boolean> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(database, { readOnly: true });
+  try {
+    return !!db.prepare(SESSION_COOKIE_QUERY).get(chromiumNow());
+  } finally {
+    db.close();
+  }
+}
+
+interface ProfileCookieStore {
+  database: string;
+  signedIn: boolean;
+}
+
+/** Chromium moved the cookie database into Network/ in version 96; the first layout that opens wins. */
+async function profileCookieStore(root: string, profile: string): Promise<ProfileCookieStore | undefined> {
+  for (const suffix of ["Cookies", "Network/Cookies"]) {
+    const database = join(root, profile, suffix);
+    try {
+      return { database, signedIn: await databaseHasSession(database) };
+    } catch (error) {
+      if (error instanceof Deno.errors.PermissionDenied) throw error;
+    }
+  }
+  return undefined;
+}
+
+async function browserProfiles(home: string, product: BrowserProduct): Promise<BrowserProfile[]> {
+  const [browser, folder, service, application] = product;
+  const root = join(home, "Library/Application Support", folder);
+  const found: BrowserProfile[] = [];
+  try {
+    for await (const entry of Deno.readDir(root)) {
+      if (!entry.isDirectory || !/^(Default|Profile \d+)$/.test(entry.name)) {
+        continue;
+      }
+      const store = await profileCookieStore(root, entry.name);
+      if (!store?.signedIn) {
+        continue;
+      }
+      found.push({ browser, profile: entry.name, database: store.database, service, application });
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return found;
+}
+
 async function candidates(): Promise<BrowserProfile[]> {
   if (Deno.build.os !== "darwin") {
     throw new AuthenticationError("Automatic browser sign-in currently supports macOS Brave, Chrome, Chromium, and Edge; no browser credentials were read");
@@ -223,52 +291,9 @@ async function candidates(): Promise<BrowserProfile[]> {
   if (!home) {
     throw new AuthenticationError("HOME is required for local browser sign-in");
   }
-  const { DatabaseSync } = await import("node:sqlite");
   const found: BrowserProfile[] = [];
-  for (const [browser, folder, service, application] of [
-    ["Brave", "BraveSoftware/Brave-Browser", "Brave Safe Storage", "Brave Browser.app"],
-    ["Chrome", "Google/Chrome", "Chrome Safe Storage", "Google Chrome.app"],
-    ["Chromium", "Chromium", "Chromium Safe Storage", "Chromium.app"],
-    ["Edge", "Microsoft Edge", "Microsoft Edge Safe Storage", "Microsoft Edge.app"],
-  ]) {
-    const root = join(home, "Library/Application Support", folder);
-    try {
-      for await (const entry of Deno.readDir(root)) {
-        if (!entry.isDirectory || !/^(Default|Profile \d+)$/.test(entry.name)) {
-          continue;
-        }
-        for (const suffix of ["Cookies", "Network/Cookies"]) {
-          const database = join(root, entry.name, suffix);
-          try {
-            const db = new DatabaseSync(database, { readOnly: true });
-            let present: boolean;
-            try {
-              present = !!db
-                .prepare(
-                  "SELECT 1 FROM cookies WHERE host_key IN ('chatgpt.com','.chatgpt.com') AND (name='__Secure-next-auth.session-token' OR name='__Secure-next-auth.session-token.0') AND path='/' AND top_frame_site_key='' AND (is_persistent=0 OR expires_utc > ?) LIMIT 1"
-                )
-                .get(BigInt(Date.now()) * 1000n + 11644473600000000n);
-            } finally {
-              db.close();
-            }
-            if (present) {
-              found.push({
-                browser,
-                profile: entry.name,
-                database,
-                service,
-                application,
-              });
-            }
-            break;
-          } catch (error) {
-            if (error instanceof Deno.errors.PermissionDenied) throw error;
-          }
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
+  for (const product of BROWSER_PRODUCTS) {
+    found.push(...(await browserProfiles(home, product)));
   }
   return found;
 }
@@ -284,12 +309,12 @@ async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
       .prepare(
         "SELECT name, host_key, encrypted_value FROM cookies WHERE host_key IN ('chatgpt.com','.chatgpt.com') AND (name='oai-did' OR name='__Secure-oai-is' OR name='__Secure-next-auth.session-token' OR name GLOB '__Secure-next-auth.session-token.[0-9]*') AND path='/' AND top_frame_site_key='' AND (is_persistent=0 OR expires_utc > ?) ORDER BY creation_utc"
       )
-      .all(BigInt(Date.now()) * 1000n + 11644473600000000n);
+      .all(chromiumNow());
   } finally {
     db.close();
   }
   const plist = await Deno.readTextFile(join("/Applications", profile.application, "Contents/Info.plist"));
-  const major = plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>(\d+)\./)?.[1];
+  const major = /<key>CFBundleShortVersionString<\/key>\s*<string>(\d+)\./.exec(plist)?.[1];
   if (!major) {
     throw new AuthenticationError("Could not read the installed browser version");
   }
@@ -305,7 +330,9 @@ async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
       child.kill();
     } catch {}
   }, 60000);
-  const output = await child.output().finally(() => clearTimeout(timer));
+  const output = await child.output().finally(() => {
+    clearTimeout(timer);
+  });
   if (!output.success) {
     throw new AuthenticationError("Keychain access was denied or timed out; no browser protections were changed");
   }
@@ -333,7 +360,9 @@ export async function authenticate(directory: URL): Promise<void> {
   }
   let selected = profiles[0];
   if (profiles.length > 1) {
-    profiles.forEach((profile, index) => console.error(`${index + 1}. ${profile.browser} / ${profile.profile}`));
+    profiles.forEach((profile, index) => {
+      console.error(`${String(index + 1)}. ${profile.browser} / ${profile.profile}`);
+    });
     const choice = prompt("Choose the browser profile to authorize (number)");
     const index = Number(choice) - 1;
     if (!choice || !Number.isInteger(index) || !profiles[index]) {
@@ -342,7 +371,9 @@ export async function authenticate(directory: URL): Promise<void> {
     selected = profiles[index];
   }
   const session = await nativeSession(selected);
-  await withAuthLock(directory, async () => await verifyAndSave(session, directory));
+  await withAuthLock(directory, async () => {
+    await verifyAndSave(session, directory);
+  });
   console.log(
     JSON.stringify({
       authenticated: true,
@@ -353,6 +384,14 @@ export async function authenticate(directory: URL): Promise<void> {
       submissionEligibility: "not_tested",
     })
   );
+}
+
+function failureMessage(error: unknown): string {
+  if (error instanceof Error && error.message.startsWith("Requires")) {
+    return "Authentication needs local read, Keychain execution, and chatgpt.com network permissions";
+  }
+  const reason = error instanceof AuthenticationError ? error.message : "local setup failed; existing authentication was preserved";
+  return "Authentication failed: " + reason;
 }
 
 if (import.meta.main) {
@@ -367,11 +406,7 @@ if (import.meta.main) {
     }
     await authenticate(directory);
   } catch (error) {
-    console.error(
-      error instanceof Error && error.message.startsWith("Requires")
-        ? "Authentication needs local read, Keychain execution, and chatgpt.com network permissions"
-        : "Authentication failed: " + (error instanceof AuthenticationError ? error.message : "local setup failed; existing authentication was preserved")
-    );
+    console.error(failureMessage(error));
     Deno.exitCode = 1;
   }
 }

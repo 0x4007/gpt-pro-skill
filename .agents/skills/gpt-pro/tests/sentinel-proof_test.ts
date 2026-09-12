@@ -80,10 +80,18 @@ Deno.test("Sentinel finalization sends the SDK enforcement token, not its raw an
 });
 
 Deno.test("conversation uses the browser's timezone-offset sign", () => {
-  const original = Date.prototype.getTimezoneOffset;
+  // conversationBody reads new Date().getTimezoneOffset() directly and exposes no seam to
+  // inject a clock, and a UTC machine would report 0, which cannot detect a reversed sign.
+  // The built-in is patched for this assertion only and restored from the descriptor taken here.
+  const original = Object.getOwnPropertyDescriptor(Date.prototype, "getTimezoneOffset")?.value as (() => number) | undefined;
+  if (original === undefined) {
+    throw new Error("Date.prototype.getTimezoneOffset is not available");
+  }
   Date.prototype.getTimezoneOffset = () => 240;
   try {
-    if (conversationBody("fixture-prompt", "fixture-message").timezone_offset_min !== 240) throw new Error("Timezone offset sign was reversed");
+    if (conversationBody("fixture-prompt", "fixture-message").timezone_offset_min !== 240) {
+      throw new Error("Timezone offset sign was reversed");
+    }
   } finally {
     Date.prototype.getTimezoneOffset = original;
   }

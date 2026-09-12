@@ -4,7 +4,23 @@ import { JobStore, POLL_WINDOW_MS, type ProJob } from "./jobs.ts";
 import { reportUsage, usageForAccount } from "./usage.ts";
 import { renewWebSession, tokenExpiry } from "./authenticate.ts";
 
-type JsonObject = Record<string, any>;
+/**
+ * Bag for the two dynamic boundaries in this file: the headless-browser shim objects the
+ * Sentinel bundle mutates, and JSON payloads received from the network. Nothing read out of
+ * one of these is trusted; callers narrow with objectValue/callable or the required* helpers
+ * before use, which is why the values stay `unknown` instead of collapsing to `any`.
+ */
+type JsonObject = Record<string, unknown>;
+
+type DynamicFunction = (...args: unknown[]) => unknown;
+
+function objectValue(value: unknown): JsonObject | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
+}
+
+function callable(value: unknown): DynamicFunction | undefined {
+  return typeof value === "function" ? (value as DynamicFunction) : undefined;
+}
 
 const CHATGPT_ORIGIN = "https://chatgpt.com";
 const MODEL = "gpt-6-pro";
@@ -64,10 +80,11 @@ function safeResponseSummary(body: string): string {
 }
 
 function assertRecord(value: unknown, label: string): JsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  const record = objectValue(value);
+  if (!record) {
     throw new Error(`${label} was not an object`);
   }
-  return value as JsonObject;
+  return record;
 }
 
 function requiredString(value: unknown, label: string): string {
@@ -77,33 +94,42 @@ function requiredString(value: unknown, label: string): string {
   return value;
 }
 
+function requiredValue<TValue>(value: TValue | null, message: string): TValue {
+  if (value === null) throw new Error(message);
+  return value;
+}
+
 function withTimeout<T>(promise: Promise<T>, label: string, ms = 90_000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Deno types the timer handle as Timeout, and the lint tsconfig carries no host globals
+  // at all, so the handle is held indirectly rather than naming either environment's shape.
+  const timer: { handle?: ReturnType<typeof setTimeout> } = {};
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    timer.handle = setTimeout(() => {
+      reject(new Error(`${label} timed out`));
+    }, ms);
   });
   return Promise.race([promise, timeout]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
+    if (timer.handle !== undefined) clearTimeout(timer.handle);
   });
 }
 
 class CookieJar {
-  #values: Array<[string, string]> = [];
+  #values: [string, string][] = [];
   #httpOnly = new Set<string>();
 
-  private isHttpOnly(name: string): boolean {
+  private _isHttpOnly(name: string): boolean {
     return this.#httpOnly.has(name) || /^(?:__Secure-next-auth\.session-token(?:\.\d+)?|__Host-next-auth\.csrf-token|__cf_bm|cf_clearance|_cfuvid)$/.test(name);
   }
 
   scriptHeader(): string {
     return this.#values
-      .filter(([name]) => !this.isHttpOnly(name))
+      .filter(([name]) => !this._isHttpOnly(name))
       .map(([name, value]) => `${name}=${value}`)
       .join("; ");
   }
 
   setFromScript(name: string, value: string): void {
-    if (!this.isHttpOnly(name)) this.set(name, value);
+    if (!this._isHttpOnly(name)) this.set(name, value);
   }
 
   seed(header: string): void {
@@ -129,8 +155,10 @@ class CookieJar {
   }
 
   ingest(response: Response, expectedIntegrityState: string | null): void {
-    const getSetCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
-    const lines = getSetCookie ? getSetCookie.call(response.headers) : [];
+    // Deno types declare getSetCookie() unconditionally, but older runtimes do not
+    // implement it, so the optional view keeps the runtime guard honest.
+    const headers: { getSetCookie?: () => string[] } = response.headers;
+    const lines = headers.getSetCookie?.() ?? [];
     for (const line of lines) {
       const first = line.split(";", 1)[0];
       const separator = first.indexOf("=");
@@ -174,50 +202,51 @@ const WEB_HEADERS = new Set([
   "chatgpt-account-id",
 ]);
 
-export function parseWebSession(envText: string, allowExpired = false): WebSession {
-  const lines = envText.split(/\r?\n/).filter((line) => /^CHATGPT_WEB_SESSION=/.test(line));
-  if (lines.length !== 1) {
-    throw new Error("Expected one CHATGPT_WEB_SESSION entry in state-directory .env");
+const REQUIRED_SESSION_HEADERS = [
+  "oai-device-id",
+  "oai-session-id",
+  "oai-client-build-number",
+  "oai-client-version",
+  "user-agent",
+  "oai-language",
+  "accept-language",
+];
+
+/** Keeps only allow-listed request headers and rejects anything the fetch layer would refuse. */
+function parseSessionHeaders(value: unknown): Record<string, string> {
+  const headers = assertRecord(value, "Web session headers");
+  const clean: Record<string, string> = {};
+  for (const [name, field] of Object.entries(headers)) {
+    if (!WEB_HEADERS.has(name) || typeof field !== "string" || /[\r\n]/.test(field)) throw new Error();
+    clean[name] = field;
   }
-  let encoded = lines[0].slice("CHATGPT_WEB_SESSION=".length).trim();
-  if (encoded.startsWith("'") && encoded.endsWith("'")) {
-    encoded = encoded.slice(1, -1);
+  // Constructing Headers is the check that every kept field is valid HTTP syntax; the same
+  // normalized view then confirms each required header is present and non-blank.
+  const validated = new Headers(clean);
+  for (const name of REQUIRED_SESSION_HEADERS) {
+    if (!validated.get(name)?.trim()) throw new Error();
   }
-  let session: WebSession;
-  try {
-    const value = assertRecord(JSON.parse(encoded), "Web session");
-    const headers = assertRecord(value.headers, "Web session headers");
-    const clean: Record<string, string> = {};
-    for (const [name, field] of Object.entries(headers)) {
-      if (!WEB_HEADERS.has(name) || typeof field !== "string" || /[\r\n]/.test(field)) throw new Error();
-      new Headers({ [name]: field });
-      clean[name] = field;
-    }
-    for (const name of ["oai-device-id", "oai-session-id", "oai-client-build-number", "oai-client-version", "user-agent", "oai-language", "accept-language"]) {
-      if (!clean[name]?.trim()) throw new Error();
-    }
-    const accessToken = requiredString(value.accessToken, "Token");
-    const cookie = requiredString(value.cookie, "Cookie");
-    if (/[\r\n\s]/.test(accessToken) || /[\r\n]/.test(cookie)) {
-      throw new Error();
-    }
-    new Headers({ authorization: "Bearer " + accessToken, cookie });
-    const cookies = new Map<string, string>();
-    for (const part of cookie.split(";")) {
-      const item = part.trim();
-      const split = item.indexOf("=");
-      const name = item.slice(0, split);
-      if (split <= 0 || (cookies.has(name) && (name === "oai-did" || name === "__Secure-oai-is"))) throw new Error();
-      cookies.set(name, item.slice(split + 1));
-    }
-    if (decodeURIComponent(cookies.get("oai-did") ?? "") !== clean["oai-device-id"] || !clientObservation(cookie).startsWith("v1.s.p.")) throw new Error();
-    session = { accessToken, cookie, headers: clean };
-  } catch {
-    throw new Error("Invalid CHATGPT_WEB_SESSION structure, headers, or cookie binding");
+  return clean;
+}
+
+/** Rejects duplicated identity cookies and any cookie that does not bind to the declared device. */
+function assertCookieBinding(cookie: string, deviceId: string): void {
+  const cookies = new Map<string, string>();
+  for (const part of cookie.split(";")) {
+    const item = part.trim();
+    const split = item.indexOf("=");
+    const name = item.slice(0, split);
+    if (split <= 0 || (cookies.has(name) && (name === "oai-did" || name === "__Secure-oai-is"))) throw new Error();
+    cookies.set(name, item.slice(split + 1));
   }
+  if (decodeURIComponent(cookies.get("oai-did") ?? "") !== deviceId || !clientObservation(cookie).startsWith("v1.s.p.")) throw new Error();
+}
+
+/** Reads the numeric expiry from a three-part web-session token. */
+function sessionExpiry(accessToken: string): number {
   let expiry: unknown;
   try {
-    const parts = session.accessToken.split(".");
+    const parts = accessToken.split(".");
     if (parts.length !== 3) throw new Error();
     expiry = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))).exp;
     if (typeof expiry !== "number" || !Number.isFinite(expiry)) {
@@ -226,7 +255,40 @@ export function parseWebSession(envText: string, allowExpired = false): WebSessi
   } catch {
     throw new Error("Invalid web-session token expiry");
   }
-  if (!allowExpired && (expiry as number) * 1000 <= Date.now()) {
+  return expiry;
+}
+
+function readSessionEnv(envText: string): string {
+  const lines = envText.split(/\r?\n/).filter((line) => line.startsWith("CHATGPT_WEB_SESSION="));
+  if (lines.length !== 1) {
+    throw new Error("Expected one CHATGPT_WEB_SESSION entry in state-directory .env");
+  }
+  let encoded = lines[0].slice("CHATGPT_WEB_SESSION=".length).trim();
+  if (encoded.startsWith("'") && encoded.endsWith("'")) {
+    encoded = encoded.slice(1, -1);
+  }
+  return encoded;
+}
+
+export function parseWebSession(envText: string, allowExpired = false): WebSession {
+  const encoded = readSessionEnv(envText);
+  let session: WebSession;
+  try {
+    const value = assertRecord(JSON.parse(encoded), "Web session");
+    const headers = parseSessionHeaders(value.headers);
+    const accessToken = requiredString(value.accessToken, "Token");
+    const cookie = requiredString(value.cookie, "Cookie");
+    if (/\s/.test(accessToken) || /[\r\n]/.test(cookie)) {
+      throw new Error();
+    }
+    new Headers({ authorization: "Bearer " + accessToken, cookie });
+    assertCookieBinding(cookie, headers["oai-device-id"]);
+    session = { accessToken, cookie, headers };
+  } catch {
+    throw new Error("Invalid CHATGPT_WEB_SESSION structure, headers, or cookie binding");
+  }
+  const expiry = sessionExpiry(session.accessToken);
+  if (!allowExpired && expiry * 1000 <= Date.now()) {
     throw new Error("ChatGPT web session expired; run scripts/authenticate.ts to sign in again");
   }
   return session;
@@ -248,6 +310,50 @@ export async function loadWebSession(directory = stateDirectory()): Promise<WebS
   return tokenExpiry(session.accessToken) <= Date.now() + 300000 ? await renewWebSession(directory) : session;
 }
 
+/** Accumulator for a pasted request dump, in the shape the .env entry expects. */
+interface ImportedSession {
+  accessToken: string;
+  cookie: string;
+  headers: Record<string, string>;
+}
+
+/** Stores one credential-bearing header, rejecting duplicates and foreign origins. */
+function consumeImportHeader(name: string, value: string, imported: ImportedSession): void {
+  if (name === "authorization") {
+    if (imported.accessToken || !value.startsWith("Bearer ")) {
+      throw new Error("Invalid imported authorization header");
+    }
+    imported.accessToken = value.slice(7);
+    return;
+  }
+  if (name === "cookie") {
+    if (imported.cookie) throw new Error("Duplicate imported Cookie header");
+    imported.cookie = value;
+    return;
+  }
+  if (WEB_HEADERS.has(name)) {
+    imported.headers[name] = value;
+    return;
+  }
+  if ((name === "host" && value !== "chatgpt.com") || (name === "origin" && value !== CHATGPT_ORIGIN)) {
+    throw new Error("Import must come from chatgpt.com");
+  }
+}
+
+/** Consumes one line of a copied request: blanks, request lines, and pseudo-headers are skipped. */
+function consumeImportLine(line: string, imported: ImportedSession): void {
+  if (!line.trim() || /^(GET|POST) \S+ HTTP\/[\d.]+$/.test(line)) return;
+  const separator = line.indexOf(":");
+  if (separator <= 0) {
+    if (!/^:(authority|method|path|scheme):/.test(line)) {
+      throw new Error("Expected copied request headers or a web-session JSON object");
+    }
+    if (line.startsWith(":authority:") && line.slice(11).trim() !== "chatgpt.com") throw new Error("Import must come from chatgpt.com");
+    return;
+  }
+  consumeImportHeader(line.slice(0, separator).toLowerCase().trim(), line.slice(separator + 1).trimStart(), imported);
+}
+
 export function parseSessionImport(text: string): WebSession {
   if (/^CHATGPT_WEB_SESSION=/m.test(text)) return parseWebSession(text);
   if (text.trimStart().startsWith("{")) {
@@ -259,34 +365,11 @@ export function parseSessionImport(text: string): WebSession {
     }
     return parseWebSession("CHATGPT_WEB_SESSION=" + JSON.stringify(value));
   }
-  const headers: Record<string, string> = {};
-  let accessToken = "",
-    cookie = "";
+  const imported: ImportedSession = { accessToken: "", cookie: "", headers: {} };
   for (const line of text.split(/\r?\n/)) {
-    if (!line.trim() || /^(GET|POST) \S+ HTTP\/[\d.]+$/.test(line)) continue;
-    const match = /^([^:]+):\s*(.*)$/.exec(line);
-    if (!match) {
-      if (/^:(authority|method|path|scheme):/.test(line)) {
-        if (line.startsWith(":authority:") && line.slice(11).trim() !== "chatgpt.com") throw new Error("Import must come from chatgpt.com");
-        continue;
-      }
-      throw new Error("Expected copied request headers or a web-session JSON object");
-    }
-    const name = match[1].toLowerCase().trim(),
-      value = match[2];
-    if (name === "authorization") {
-      if (accessToken || !value.startsWith("Bearer ")) {
-        throw new Error("Invalid imported authorization header");
-      }
-      accessToken = value.slice(7);
-    } else if (name === "cookie") {
-      if (cookie) throw new Error("Duplicate imported Cookie header");
-      cookie = value;
-    } else if (WEB_HEADERS.has(name)) headers[name] = value;
-    else if ((name === "host" && value !== "chatgpt.com") || (name === "origin" && value !== CHATGPT_ORIGIN))
-      throw new Error("Import must come from chatgpt.com");
+    consumeImportLine(line, imported);
   }
-  return parseWebSession("CHATGPT_WEB_SESSION=" + JSON.stringify({ accessToken, cookie, headers }));
+  return parseWebSession("CHATGPT_WEB_SESSION=" + JSON.stringify(imported));
 }
 
 export async function importWebSession(text: string, directory: URL): Promise<void> {
@@ -308,10 +391,10 @@ export class ChatSession {
   readonly sessionId: string;
   readonly cookies = new CookieJar();
   readonly browserHeaders: Record<string, string>;
-  private readonly accessToken: string;
+  private readonly _accessToken: string;
 
   constructor(session: WebSession) {
-    this.accessToken = session.accessToken;
+    this._accessToken = session.accessToken;
     this.deviceId = session.headers["oai-device-id"];
     this.sessionId = session.headers["oai-session-id"];
     this.cookies.seed(session.cookie);
@@ -335,7 +418,7 @@ export class ChatSession {
     for (const [name, value] of Object.entries(this.browserHeaders)) {
       if (!headers.has(name)) headers.set(name, value);
     }
-    headers.set("authorization", `Bearer ${this.accessToken}`);
+    headers.set("authorization", `Bearer ${this._accessToken}`);
     const cookie = this.cookies.header();
     if (cookie) headers.set("cookie", cookie);
 
@@ -350,9 +433,13 @@ export class ChatSession {
   }
 }
 
-type Listener = (event: any) => void;
+/** Listeners are registered by the bundle, so the event payload is only ever forwarded. */
+type Listener = (event: unknown) => void;
 
-function makeEventTarget(window: JsonObject): void {
+/** A shim window as makeWindow builds it: the bag of globals plus the frame message receiver. */
+type ShimWindow = JsonObject & { __receiveMessage: Listener };
+
+function makeEventTarget(window: JsonObject): Listener {
   const listeners = new Map<string, Listener[]>();
   window.addEventListener = (type: string, listener: Listener) => {
     const current = listeners.get(type) ?? [];
@@ -370,18 +457,23 @@ function makeEventTarget(window: JsonObject): void {
     }
     return true;
   };
-  window.__receiveMessage = (event: any) => {
+  function receiveMessage(event: unknown): void {
     for (const listener of (listeners.get("message") ?? []).slice()) {
       listener.call(window, event);
     }
-  };
+  }
+  window.__receiveMessage = receiveMessage;
+  return receiveMessage;
 }
 
 function elementShim(extra: JsonObject = {}): JsonObject {
   const attributes = new Map<string, string>();
+  // The children array is bound here so the shim can reach it with real types while the
+  // bundle keeps seeing the same array behind element.children.
+  const children: JsonObject[] = [];
   const element: JsonObject = {
     style: {},
-    children: [],
+    children,
     ariaHidden: false,
     innerText: "",
     textContent: "",
@@ -393,12 +485,12 @@ function elementShim(extra: JsonObject = {}): JsonObject {
       return attributes.get(name) ?? null;
     },
     appendChild(child: JsonObject) {
-      element.children.push(child);
+      children.push(child);
       return child;
     },
     removeChild(child: JsonObject) {
-      const index = element.children.indexOf(child);
-      if (index >= 0) element.children.splice(index, 1);
+      const index = children.indexOf(child);
+      if (index >= 0) children.splice(index, 1);
       return child;
     },
     getBoundingClientRect() {
@@ -430,7 +522,7 @@ function canvasShim(): JsonObject {
       }
       return {};
     },
-    getParameter(name: number) {
+    getParameter(name: number): unknown {
       if (name === 37445) return "WebGL Vendor";
       if (name === 37446) return "WebGL Renderer";
       return 0;
@@ -469,16 +561,37 @@ function canvasShim(): JsonObject {
   });
 }
 
+const ESCAPE_UNESCAPED = /[^A-Za-z0-9@*_+./-]/g;
+const UNESCAPE_SEQUENCE = /%u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}/g;
+
+// The Sentinel bundle reads the legacy window.escape/window.unescape globals, which
+// TypeScript and Deno both report as deprecated. These implement the same Annex B
+// semantics (uppercase %XX below U+0100, %uXXXX above, code-unit by code-unit) so the
+// shim exposes identical behaviour without reaching for the deprecated globals.
+function legacyEscape(value: unknown): string {
+  return String(value).replace(ESCAPE_UNESCAPED, (character) => {
+    const code = character.charCodeAt(0);
+    const hex = code.toString(16).toUpperCase();
+    return code < 256 ? "%" + hex.padStart(2, "0") : "%u" + hex.padStart(4, "0");
+  });
+}
+
+function legacyUnescape(value: unknown): string {
+  return String(value).replace(UNESCAPE_SEQUENCE, (sequence) => {
+    return String.fromCharCode(parseInt(sequence.charAt(1) === "u" ? sequence.slice(2) : sequence.slice(1), 16));
+  });
+}
+
 function makeWindow(
   session: ChatSession,
   sdkUrl: string,
   frameUrl: string,
   kind: "outer" | "child",
-  parent: JsonObject | null,
-  onCreateChild?: () => JsonObject
-): JsonObject {
+  parent: ShimWindow | null,
+  onCreateChild?: () => ShimWindow
+): ShimWindow {
   const window: JsonObject = {};
-  makeEventTarget(window);
+  const receiveMessage = makeEventTarget(window);
 
   const location = new URL(kind === "child" ? frameUrl : `${CHATGPT_ORIGIN}/`);
   const performanceShim = {
@@ -497,13 +610,13 @@ function makeWindow(
       return [...storage.keys()][index] ?? null;
     },
     getItem(key: string) {
-      return storage.get(String(key)) ?? null;
+      return storage.get(key) ?? null;
     },
     setItem(key: string, value: unknown) {
-      storage.set(String(key), String(value));
+      storage.set(key, String(value));
     },
     removeItem(key: string) {
-      storage.delete(String(key));
+      storage.delete(key);
     },
     clear() {
       storage.clear();
@@ -576,7 +689,9 @@ function makeWindow(
   window.clearInterval = clearInterval;
   window.queueMicrotask = queueMicrotask;
   window.requestIdleCallback = (callback: (deadline: JsonObject) => void) => {
-    return setTimeout(() => callback({ timeRemaining: () => 1, didTimeout: false }), 0);
+    return setTimeout(() => {
+      callback({ timeRemaining: () => 1, didTimeout: false });
+    }, 0);
   };
   window.cancelIdleCallback = clearTimeout;
   window.matchMedia = () => ({
@@ -626,8 +741,8 @@ function makeWindow(
   window.isFinite = isFinite;
   window.encodeURIComponent = encodeURIComponent;
   window.decodeURIComponent = decodeURIComponent;
-  window.escape = escape;
-  window.unescape = unescape;
+  window.escape = legacyEscape;
+  window.unescape = legacyUnescape;
   window.document = null;
 
   const currentScript = elementShim({ src: sdkUrl });
@@ -681,39 +796,45 @@ function makeWindow(
   };
   document.head = elementShim({
     appendChild(element: JsonObject) {
-      if (typeof element.onload === "function") {
-        queueMicrotask(() => element.onload());
+      if (callable(element.onload)) {
+        // The callback is re-read when the microtask runs, exactly as a browser would fire it.
+        queueMicrotask(() => {
+          (element.onload as DynamicFunction)();
+        });
       }
       return element;
     },
   });
   document.body = elementShim({
     appendChild(element: JsonObject) {
-      if (element?.contentWindow === null && onCreateChild) {
+      if (element.contentWindow === null && onCreateChild) {
         const child = onCreateChild();
         element.contentWindow = child;
         element.contentDocument = child.document;
         window.__childWindow = child;
-        element.contentWindow.postMessage = (data: unknown, origin: string) => {
+        // contentWindow is the child we just stored, so the frame writes to the same object.
+        child.postMessage = (data: unknown, origin: string) => {
           child.__receiveMessage({ data, origin, source: window });
         };
-        queueMicrotask(() => element.dispatchEvent({ type: "load" }));
+        queueMicrotask(() => {
+          (element.dispatchEvent as DynamicFunction)({ type: "load" });
+        });
       }
       return element;
     },
   });
   window.document = document;
-  window.document.location = location;
+  document.location = location;
 
   window.postMessage = (data: unknown, origin: string) => {
     if (kind === "child" && parent) {
       parent.__receiveMessage({ data, origin, source: window });
     } else {
-      window.__receiveMessage({ data, origin, source: window.__childWindow });
+      receiveMessage({ data, origin, source: window.__childWindow });
     }
   };
 
-  return window;
+  return window as ShimWindow;
 }
 
 function patchSentinelSdk(source: string): string {
@@ -728,27 +849,54 @@ function patchSentinelSdk(source: string): string {
   return withVm;
 }
 
+/** The proof engine the SDK patch exposes: the shim bag plus the two calls this file makes on it. */
+type SentinelProofEngine = JsonObject & {
+  getRequirementsToken: DynamicFunction;
+  getEnforcementToken: DynamicFunction;
+};
+
+function sentinelProofEngine(value: unknown): SentinelProofEngine | undefined {
+  const engine = objectValue(value);
+  if (!engine || !callable(engine.getRequirementsToken)) return undefined;
+  // The methods keep running against the engine object itself, so `this` is preserved.
+  return engine as SentinelProofEngine;
+}
+
+/**
+ * Runs the Sentinel SDK bundle inside a contextified shim window.
+ *
+ * The executed source is not free-form input: SentinelHarness.create accepts only the SDK
+ * URL advertised by chatgpt.com, ChatSession.fetch refuses any other origin, and
+ * patchSentinelSdk rejects a bundle that does not match the known interface. This remains
+ * the one deliberate dynamic-execution site in the file, and sonarjs/code-eval cannot see
+ * any of that provenance for a non-literal argument.
+ */
+function runSentinelSource(source: string, context: JsonObject, filename: string): void {
+  // eslint-disable-next-line sonarjs/code-eval -- executing the vetted SDK bundle in its shim window is the whole point of this harness.
+  runInContext(source, context, { filename });
+}
+
 export class SentinelHarness {
   private constructor(
-    private readonly session: ChatSession,
-    private readonly sdkSource: string,
-    private readonly sdkUrl: string
+    private readonly _session: ChatSession,
+    private readonly _sdkSource: string,
+    private readonly _sdkUrl: string
   ) {}
 
   static async create(session: ChatSession): Promise<SentinelHarness> {
     const bootstrapResponse = await session.fetch(`${CHATGPT_ORIGIN}/backend-api/sentinel/sdk.js`);
     if (!bootstrapResponse.ok) {
-      throw new Error(`Sentinel bootstrap returned ${bootstrapResponse.status}: ${safeResponseSummary(await bootstrapResponse.text())}`);
+      throw new Error(`Sentinel bootstrap returned ${String(bootstrapResponse.status)}: ${safeResponseSummary(await bootstrapResponse.text())}`);
     }
     const bootstrap = await bootstrapResponse.text();
-    const sdkUrl = bootstrap.match(/https:\/\/chatgpt\.com\/sentinel\/[^'" ]+\/sdk\.js/)?.[0];
+    const sdkUrl = /https:\/\/chatgpt\.com\/sentinel\/[^'" ]+\/sdk\.js/.exec(bootstrap)?.[0];
     if (!sdkUrl) {
       throw new Error("Sentinel bootstrap did not provide an SDK URL");
     }
 
     const sdkResponse = await session.fetch(sdkUrl);
     if (!sdkResponse.ok) {
-      throw new Error(`Sentinel SDK returned ${sdkResponse.status}: ${safeResponseSummary(await sdkResponse.text())}`);
+      throw new Error(`Sentinel SDK returned ${String(sdkResponse.status)}: ${safeResponseSummary(await sdkResponse.text())}`);
     }
     return new SentinelHarness(session, patchSentinelSdk(await sdkResponse.text()), sdkUrl);
   }
@@ -758,35 +906,35 @@ export class SentinelHarness {
     turnstile: string;
     chatRequirementsToken: string;
   }> {
-    const version = this.sdkUrl.match(/\/sentinel\/([^/]+)\//)?.[1];
+    const version = /\/sentinel\/([^/]+)\//.exec(this._sdkUrl)?.[1];
     if (!version) {
       throw new Error("Could not identify the Sentinel SDK version");
     }
     const frameUrl = `${CHATGPT_ORIGIN}/backend-api/sentinel/frame.html?sv=${encodeURIComponent(version)}`;
 
-    let child: JsonObject | null = null;
-    const outer = makeWindow(this.session, this.sdkUrl, frameUrl, "outer", null, () => {
-      child = makeWindow(this.session, this.sdkUrl, frameUrl, "child", outer);
+    let child: ShimWindow | null = null;
+    const outer = makeWindow(this._session, this._sdkUrl, frameUrl, "outer", null, () => {
+      child = makeWindow(this._session, this._sdkUrl, frameUrl, "child", outer);
       createContext(child);
-      runInContext(this.sdkSource, child, { filename: "sentinel-child.js" });
+      runSentinelSource(this._sdkSource, child, "sentinel-child.js");
       return child;
     });
     createContext(outer);
-    runInContext(this.sdkSource, outer, { filename: "sentinel-outer.js" });
-    if (!child) throw new Error("Sentinel iframe context was not created");
+    runSentinelSource(this._sdkSource, outer, "sentinel-outer.js");
+    requiredValue(child, "Sentinel iframe context was not created");
 
-    const engine = outer.__uosSentinelEngine;
-    const bindProof = outer.__uosSentinelBindProof;
-    const runTurnstile = outer.__uosSentinelRunTurnstile;
-    if (!engine || typeof engine.getRequirementsToken !== "function") {
+    const engine = sentinelProofEngine(outer.__uosSentinelEngine);
+    const bindProof = callable(outer.__uosSentinelBindProof);
+    const runTurnstile = callable(outer.__uosSentinelRunTurnstile);
+    if (!engine) {
       throw new Error("Sentinel proof engine was not exposed by the SDK");
     }
-    if (typeof bindProof !== "function" || typeof runTurnstile !== "function") {
+    if (!bindProof || !runTurnstile) {
       throw new Error("Sentinel Turnstile VM was not exposed by the SDK");
     }
 
     const proof = requiredString(await withTimeout(Promise.resolve(engine.getRequirementsToken()), "Sentinel proof generation"), "Sentinel proof");
-    const prepareResponse = await this.session.fetch(`${CHATGPT_ORIGIN}/backend-api/sentinel/chat-requirements/prepare`, {
+    const prepareResponse = await this._session.fetch(`${CHATGPT_ORIGIN}/backend-api/sentinel/chat-requirements/prepare`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -796,7 +944,7 @@ export class SentinelHarness {
     });
     const prepareBody = await prepareResponse.text();
     if (!prepareResponse.ok) {
-      throw new Error(`Chat requirements prepare returned ${prepareResponse.status}: ${safeResponseSummary(prepareBody)}`);
+      throw new Error(`Chat requirements prepare returned ${String(prepareResponse.status)}: ${safeResponseSummary(prepareBody)}`);
     }
     const requirements = assertRecord(JSON.parse(prepareBody), "Chat requirements prepare response");
     const turnstile = assertRecord(requirements.turnstile, "Chat requirements Turnstile");
@@ -817,7 +965,7 @@ export class SentinelHarness {
       throw new Error("The Sentinel Turnstile VM returned an execution error");
     }
 
-    const finalizeResponse = await this.session.fetch(`${CHATGPT_ORIGIN}/backend-api/sentinel/chat-requirements/finalize`, {
+    const finalizeResponse = await this._session.fetch(`${CHATGPT_ORIGIN}/backend-api/sentinel/chat-requirements/finalize`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -831,7 +979,7 @@ export class SentinelHarness {
     });
     const finalizeBody = await finalizeResponse.text();
     if (!finalizeResponse.ok) {
-      throw new Error(`Chat requirements finalize returned ${finalizeResponse.status}: ${safeResponseSummary(finalizeBody)}`);
+      throw new Error(`Chat requirements finalize returned ${String(finalizeResponse.status)}: ${safeResponseSummary(finalizeBody)}`);
     }
     const final = assertRecord(JSON.parse(finalizeBody), "Chat requirements finalize response");
     return {
@@ -870,36 +1018,54 @@ export function completedAnswer(parsed: ParsedSse): string {
   return parsed.text;
 }
 
+/** Joins the text parts of an assistant message, ignoring any non-string entries. */
+function messagePartsText(message: JsonObject): string {
+  const rawParts = objectValue(message.content)?.parts;
+  const parts: unknown[] = Array.isArray(rawParts) ? rawParts : [];
+  return parts.filter((part) => typeof part === "string").join("");
+}
+
+/** A mapping node counts only when it is a finished, final-turn assistant message. */
+function completedAssistantMessage(node: JsonObject): JsonObject | undefined {
+  const message = objectValue(node.message);
+  if (!message) return undefined;
+  if (objectValue(message.author)?.role !== "assistant") return undefined;
+  if (message.channel !== "final" || message.status !== "finished_successfully" || message.end_turn !== true) return undefined;
+  const content = objectValue(message.content);
+  if (content?.content_type !== "text" || !Array.isArray(content.parts)) return undefined;
+  const modelSlug = objectValue(message.metadata)?.model_slug;
+  if (modelSlug && modelSlug !== MODEL) return undefined;
+  return message;
+}
+
+/** Walks parent links until the prompt message, then returns the answer text for that prompt. */
+function answerTextForPrompt(mapping: JsonObject, node: JsonObject, message: JsonObject, messageId: string): string | undefined {
+  const visited = new Set<string>();
+  let parent = node.parent;
+  while (typeof parent === "string" && !visited.has(parent)) {
+    visited.add(parent);
+    const ancestor = objectValue(mapping[parent]);
+    if (!ancestor) break;
+    const ancestorMessage = objectValue(ancestor.message);
+    if (objectValue(ancestorMessage?.author)?.role === "user") {
+      if (ancestorMessage?.id !== messageId) return undefined;
+      const text = messagePartsText(message);
+      return text.trim() ? text : undefined;
+    }
+    parent = ancestor.parent;
+  }
+  return undefined;
+}
+
 export function answerForMessage(conversation: JsonObject, messageId: string): string | undefined {
   const mapping = assertRecord(conversation.mapping, "Conversation mapping");
   const answers = new Set<string>();
   for (const node of Object.values(mapping)) {
-    const message = node?.message;
-    if (
-      message?.author?.role !== "assistant" ||
-      message.channel !== "final" ||
-      message.status !== "finished_successfully" ||
-      message.end_turn !== true ||
-      message.content?.content_type !== "text" ||
-      !Array.isArray(message.content.parts) ||
-      (message.metadata?.model_slug && message.metadata.model_slug !== MODEL)
-    )
-      continue;
-    let parent = node.parent;
-    const visited = new Set<string>();
-    while (typeof parent === "string" && !visited.has(parent)) {
-      visited.add(parent);
-      const ancestor = mapping[parent];
-      if (!ancestor) break;
-      if (ancestor.message?.author?.role === "user") {
-        if (ancestor.message.id === messageId) {
-          const text = message.content.parts.filter((part: unknown) => typeof part === "string").join("");
-          if (text.trim()) answers.add(text);
-        }
-        break;
-      }
-      parent = ancestor.parent;
-    }
+    const record = objectValue(node);
+    const message = record === undefined ? undefined : completedAssistantMessage(record);
+    if (!record || !message) continue;
+    const text = answerTextForPrompt(mapping, record, message, messageId);
+    if (text !== undefined) answers.add(text);
   }
   return answers.size === 1 ? [...answers][0] : undefined;
 }
@@ -907,6 +1073,68 @@ export function answerForMessage(conversation: JsonObject, messageId: string): s
 export interface PollOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+}
+
+/** What one retrieval attempt decided: keep polling, stop with an error, or finish with an answer. */
+interface PollAttempt {
+  retryable: boolean;
+  delay: number;
+  completed?: string;
+}
+
+/** Rate-limit accounting plus any Retry-After floor for a retryable retrieval failure. */
+function retryDelay(job: ProJob, response: Response, now: () => number, delay: number): number {
+  let next = delay;
+  if (response.status === 429) {
+    job.rateLimitCount = (job.rateLimitCount ?? 0) + 1;
+    next = Math.max(next, Math.min(900_000, 60_000 * 2 ** Math.min(job.rateLimitCount - 1, 4)));
+  }
+  const retryAfter = response.headers.get("retry-after");
+  const seconds = retryAfter === null ? NaN : Number(retryAfter);
+  const retryMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter ?? "") - now();
+  if (Number.isFinite(retryMs) && retryMs > 0) {
+    next = Math.max(next, retryMs);
+  }
+  return next;
+}
+
+/** Retrieves the conversation once, refreshing the job record with what the attempt learned. */
+async function pollAttempt(
+  session: Pick<ChatSession, "fetch">,
+  job: ProJob,
+  conversationId: string,
+  now: () => number,
+  deadline: number,
+  delay: number
+): Promise<PollAttempt> {
+  try {
+    const response = await session.fetch(CHATGPT_ORIGIN + "/backend-api/conversation/" + encodeURIComponent(conversationId), {
+      signal: AbortSignal.timeout(Math.max(1, Math.min(60_000, deadline - now()))),
+      headers: { accept: "application/json" },
+    });
+    job.pollCount++;
+    job.lastPollAt = new Date(now()).toISOString();
+    if (response.status === 429 || response.status >= 500 || response.status === 404) {
+      const nextDelay = retryDelay(job, response, now, delay);
+      await response.body?.cancel();
+      job.lastError = "Conversation retrieval returned HTTP " + String(response.status);
+      return { retryable: true, delay: nextDelay };
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      job.lastError = "Conversation retrieval returned HTTP " + String(response.status) + "; resume this job after resolving access";
+      return { retryable: false, delay };
+    }
+    const conversation = assertRecord(await response.json(), "Conversation response");
+    const answer = answerForMessage(conversation, job.messageId);
+    delete job.rateLimitCount;
+    delete job.nextPollAt;
+    delete job.lastError;
+    return { retryable: true, delay, completed: answer };
+  } catch {
+    job.lastError = "Conversation retrieval interrupted; retrying the existing job";
+    return { retryable: true, delay };
+  }
 }
 
 export async function pollJob(
@@ -927,59 +1155,18 @@ export async function pollJob(
       await sleep(Math.min(nextPollAt - now(), deadline - now()));
       continue;
     }
-    let retryable = false;
-    let completed: string | undefined;
-    let delay = job.pollCount < 6 ? 5000 : 30_000;
-    try {
-      const response = await session.fetch(CHATGPT_ORIGIN + "/backend-api/conversation/" + encodeURIComponent(conversationId), {
-        signal: AbortSignal.timeout(Math.max(1, Math.min(60_000, deadline - now()))),
-        headers: { accept: "application/json" },
-      });
-      job.pollCount++;
-      job.lastPollAt = new Date(now()).toISOString();
-      if (response.status === 429 || response.status >= 500 || response.status === 404) {
-        if (response.status === 429) {
-          job.rateLimitCount = (job.rateLimitCount ?? 0) + 1;
-          delay = Math.max(delay, Math.min(900_000, 60_000 * 2 ** Math.min(job.rateLimitCount - 1, 4)));
-        }
-        const retryAfter = response.headers.get("retry-after");
-        const seconds = retryAfter === null ? NaN : Number(retryAfter);
-        const retryMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter ?? "") - now();
-        if (Number.isFinite(retryMs) && retryMs > 0) {
-          delay = Math.max(delay, retryMs);
-        }
-        await response.body?.cancel();
-        job.lastError = "Conversation retrieval returned HTTP " + response.status;
-        retryable = true;
-      } else if (!response.ok) {
-        await response.body?.cancel();
-        job.lastError = "Conversation retrieval returned HTTP " + response.status + "; resume this job after resolving access";
-      } else {
-        const conversation = assertRecord(await response.json(), "Conversation response");
-        const answer = answerForMessage(conversation, job.messageId);
-        delete job.rateLimitCount;
-        delete job.nextPollAt;
-        delete job.lastError;
-        if (answer !== undefined) {
-          completed = answer;
-        }
-        retryable = true;
-      }
-    } catch {
-      job.lastError = "Conversation retrieval interrupted; retrying the existing job";
-      retryable = true;
-    }
-    if (completed !== undefined) {
-      job.answer = completed;
+    const attempt = await pollAttempt(session, job, conversationId, now, deadline, job.pollCount < 6 ? 5000 : 30_000);
+    if (attempt.completed !== undefined) {
+      job.answer = attempt.completed;
       job.status = "completed";
       await save(job);
-      return completed;
+      return attempt.completed;
     }
-    if (retryable) job.nextPollAt = new Date(now() + delay).toISOString();
+    if (attempt.retryable) job.nextPollAt = new Date(now() + attempt.delay).toISOString();
     await save(job);
-    if (!retryable) throw new Error(job.lastError);
+    if (!attempt.retryable) throw new Error(job.lastError);
     const remaining = deadline - now();
-    if (remaining > 0) await sleep(Math.min(delay, remaining));
+    if (remaining > 0) await sleep(Math.min(attempt.delay, remaining));
   }
   job.status = "timed_out";
   job.lastError = "No completed answer within six hours; resume this job without resubmitting";
@@ -988,13 +1175,14 @@ export async function pollJob(
 }
 
 function appendAssistantValue(value: JsonObject, messages: Map<string, string>, fallback: { value: string }): void {
-  const message = value.v?.message ?? value.message;
-  if (message && typeof message === "object") {
-    const role = message.author?.role;
-    const parts = message.content?.parts;
+  const fromStream = objectValue(objectValue(value.v)?.message);
+  const message = fromStream ?? objectValue(value.message);
+  if (message) {
+    const role = objectValue(message.author)?.role;
+    const parts = objectValue(message.content)?.parts;
     if (role === "assistant" && Array.isArray(parts)) {
-      const text = parts.filter((part: unknown) => typeof part === "string").join("");
-      const id = typeof message.id === "string" ? message.id : `message-${messages.size}`;
+      const text = messagePartsText(message);
+      const id = typeof message.id === "string" ? message.id : `message-${String(messages.size)}`;
       messages.set(id, text);
     }
   }
@@ -1012,7 +1200,7 @@ export function parseSseText(raw: string): ParsedSse {
   let terminal = false;
   let conversationId: string | undefined;
 
-  const flush = () => {
+  function flush(): void {
     if (dataLines.length === 0) {
       event = "message";
       return;
@@ -1028,15 +1216,14 @@ export function parseSseText(raw: string): ParsedSse {
           conversationId = parsed.conversation_id;
         }
         if (parsed.type === "stream_handoff" || parsed.type === "conversation_detail_metadata") {
-          eventTypes.push(String(parsed.type));
+          eventTypes.push(parsed.type);
         }
         appendAssistantValue(parsed, messages, fallback);
       } catch {}
     }
     event = "message";
     dataLines = [];
-  };
-
+  }
   for (const line of raw.replaceAll("\r\n", "\n").split("\n")) {
     if (line === "") {
       flush();
@@ -1072,7 +1259,7 @@ export function conversationBody(prompt: string, messageId: string): JsonObject 
     model: MODEL,
     client_prepare_state: "sent",
     timezone_offset_min: new Date().getTimezoneOffset(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
     conversation_mode: { kind: "primary_assistant" },
     enable_message_followups: true,
     system_hints: [],
@@ -1113,7 +1300,7 @@ async function submitConversation(session: ChatSession, job: ProJob, store: JobS
     client_prepare_dispatch: "immediate",
     client_prepare_source: "context_change",
     timezone_offset_min: new Date().getTimezoneOffset(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
     conversation_mode: { kind: "primary_assistant" },
     system_hints: [],
     model_response_contracts: MODEL_RESPONSE_CONTRACTS,
@@ -1145,7 +1332,7 @@ async function submitConversation(session: ChatSession, job: ProJob, store: JobS
   });
   const prepareText = await prepare.text();
   if (!prepare.ok) {
-    throw new Error(`Conversation prepare returned ${prepare.status}: ${safeResponseSummary(prepareText)}`);
+    throw new Error(`Conversation prepare returned ${String(prepare.status)}: ${safeResponseSummary(prepareText)}`);
   }
 
   job.status = "submitting";
@@ -1171,7 +1358,7 @@ async function submitConversation(session: ChatSession, job: ProJob, store: JobS
   });
   if (!response.ok) {
     job.status = response.status >= 400 && response.status < 500 ? "failed" : "uncertain";
-    job.lastError = "Conversation returned HTTP " + response.status + "; do not resubmit automatically";
+    job.lastError = "Conversation returned HTTP " + String(response.status) + "; do not resubmit automatically";
     await response.body?.cancel();
     await store.save(job);
     throw new Error(job.lastError);
@@ -1194,16 +1381,16 @@ export async function captureConversation(response: Response, saveId: (id: strin
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
   let saved: string | undefined;
-  const consume = async (frame: string) => {
+  async function consume(frame: string): Promise<boolean> {
     const parsed = parseSseText(frame);
     if (parsed.conversationId && parsed.conversationId !== saved) {
       await saveId(parsed.conversationId);
       saved = parsed.conversationId;
     }
     return parsed.terminal || parsed.eventTypes.includes("stream_handoff");
-  };
+  }
   try {
-    while (true) {
+    for (;;) {
       const { value, done } = await reader.read();
       if (done) {
         if (buffer) await consume(buffer);
@@ -1221,7 +1408,7 @@ export async function captureConversation(response: Response, saveId: (id: strin
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }
@@ -1238,6 +1425,22 @@ function accountIdForSession(session: WebSession): string {
   }
 }
 
+/**
+ * Header maps are typed as always-populated strings, but an account header really can be
+ * absent, so the read is widened instead of letting `??` be reported as dead code.
+ */
+function optionalHeader(headers: Record<string, string>, name: string): string | undefined {
+  return headers[name];
+}
+
+/**
+ * The namespaced auth claim on a token. The account id stays untyped so it is hashed exactly
+ * as it arrived, matching the previous behaviour for any non-string claim value.
+ */
+function tokenAccountClaim(claims: JsonObject): unknown {
+  return objectValue(claims["https://api.openai.com/auth"])?.chatgpt_account_id;
+}
+
 async function accountIdentity(session: WebSession): Promise<string> {
   const parts = session.accessToken.split(".");
   let claims: JsonObject;
@@ -1247,7 +1450,7 @@ async function accountIdentity(session: WebSession): Promise<string> {
     throw new Error("Invalid web-session identity");
   }
   const subject = requiredString(claims.sub, "Web-session subject");
-  const account = session.headers["chatgpt-account-id"] ?? claims["https://api.openai.com/auth"]?.chatgpt_account_id ?? "";
+  const account = optionalHeader(session.headers, "chatgpt-account-id") ?? tokenAccountClaim(claims) ?? "";
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([subject, account])));
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -1266,7 +1469,7 @@ export async function submitJob(prompt: string, store = new JobStore(), onCreate
     return await store.withLock(job.id, async (current) => {
       try {
         await submitConversation(new ChatSession(auth), current, store);
-      } catch (error) {
+      } catch {
         if (current.conversationId) {
           current.status = "pending";
           current.lastError = "Initial stream interrupted; retrieve the existing conversation";
@@ -1306,7 +1509,9 @@ export async function resultForJob(id: string, store = new JobStore()): Promise<
 }
 
 export async function run(prompt: string, store = new JobStore()): Promise<string> {
-  const job = await submitJob(prompt, store, (job) => console.error("GPT Pro job: " + job.id));
+  const job = await submitJob(prompt, store, (job) => {
+    console.error("GPT Pro job: " + job.id);
+  });
   return await resultForJob(job.id, store);
 }
 
@@ -1327,93 +1532,81 @@ function jobSummary(job: ProJob) {
   };
 }
 
-export async function main(args: string[]): Promise<void> {
-  let directory: URL | undefined;
-  if (args[0] === "--state-dir") {
-    if (!args[1]) throw new Error("--state-dir requires an absolute path");
-    directory = stateDirectory(args[1]);
-    args = args.slice(2);
+const HELP_TEXT =
+  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.";
+
+async function importAuthCommand(args: string[], directory: URL): Promise<void> {
+  if (args.length !== 2) {
+    throw new Error("--auth-import requires a private file path or - for stdin");
   }
-  const command = args[0];
-  if (command === "--help") {
-    console.log(
-      "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines."
-    );
-    return;
+  const text = args[1] === "-" ? await new Response(Deno.stdin.readable).text() : await Deno.readTextFile(args[1]);
+  await importWebSession(text, directory);
+  console.log(JSON.stringify({ status: "imported", modelSubmission: false }));
+}
+
+async function authCheckCommand(args: string[], store: JobStore, directory: URL): Promise<void> {
+  if (args.length !== 1) throw new Error("--auth-check takes no arguments");
+  const auth = await loadWebSession(directory);
+  const session = new ChatSession(auth);
+  await reportUsage(store, await accountIdentity(auth), {
+    session,
+    accountId: accountIdForSession(auth),
+  });
+  const response = await session.fetch(CHATGPT_ORIGIN + "/backend-api/models", { signal: AbortSignal.timeout(30000) });
+  await response.body?.cancel();
+  console.log(
+    JSON.stringify({
+      authenticated: response.ok,
+      httpStatus: response.status,
+      submissionEligibility: "not_tested",
+      modelSubmission: false,
+    })
+  );
+  if (!response.ok) Deno.exitCode = 1;
+}
+
+async function jobsCommand(args: string[], store: JobStore): Promise<void> {
+  if (args.length !== 1) throw new Error("--jobs takes no arguments");
+  const jobs = await store.list();
+  for (const account of new Set(jobs.map((job) => job.account))) {
+    await reportUsage(store, account);
   }
-  directory ??= stateDirectory();
-  const store = new JobStore(new URL(".gpt-pro-jobs/", directory));
-  if (command === "--auth-import") {
-    if (args.length !== 2) {
-      throw new Error("--auth-import requires a private file path or - for stdin");
-    }
-    const text = args[1] === "-" ? await new Response(Deno.stdin.readable).text() : await Deno.readTextFile(args[1]);
-    await importWebSession(text, directory);
-    console.log(JSON.stringify({ status: "imported", modelSubmission: false }));
-    return;
-  }
-  if (command === "--auth-check") {
-    if (args.length !== 1) throw new Error("--auth-check takes no arguments");
-    const auth = await loadWebSession(directory);
-    const session = new ChatSession(auth);
-    await reportUsage(store, await accountIdentity(auth), {
-      session,
-      accountId: accountIdForSession(auth),
-    });
-    const response = await session.fetch(CHATGPT_ORIGIN + "/backend-api/models", { signal: AbortSignal.timeout(30000) });
-    await response.body?.cancel();
-    console.log(
-      JSON.stringify({
-        authenticated: response.ok,
-        httpStatus: response.status,
-        submissionEligibility: "not_tested",
-        modelSubmission: false,
-      })
-    );
-    if (!response.ok) Deno.exitCode = 1;
-    return;
-  }
-  if (command === "--jobs") {
-    if (args.length !== 1) throw new Error("--jobs takes no arguments");
-    const jobs = await store.list();
-    for (const account of new Set(jobs.map((job) => job.account))) {
-      await reportUsage(store, account);
-    }
-    console.log(JSON.stringify(jobs.map(jobSummary)));
-    return;
-  }
-  if (command === "--status" || command === "--result") {
-    if (args.length !== 2) throw new Error(command + " requires one job ID");
-    if (command === "--status") {
-      const job = await store.read(args[1]);
-      await reportUsage(store, job.account);
-      console.log(JSON.stringify(jobSummary(job)));
-    } else console.log(await resultForJob(args[1], store));
-    return;
-  }
-  if (command === "--watch") {
-    if (args.length !== 1) throw new Error("--watch takes no arguments");
-    const pending = (await store.list()).filter((job) => job.conversationId && job.status !== "completed" && job.status !== "failed");
-    await Promise.all(
-      pending.map(async (job) => {
-        try {
-          const answer = await resultForJob(job.id, store);
-          console.log(JSON.stringify({ jobId: job.id, status: "completed", answer }));
-        } catch (error) {
-          console.log(
-            JSON.stringify({
-              jobId: job.id,
-              status: (await store.read(job.id)).status,
-              error: redactSensitiveText(errorText(error)),
-            })
-          );
-          Deno.exitCode = 1;
-        }
-      })
-    );
-    return;
-  }
-  const background = command === "--background";
+  console.log(JSON.stringify(jobs.map(jobSummary)));
+}
+
+async function jobLookupCommand(command: string, args: string[], store: JobStore): Promise<void> {
+  if (args.length !== 2) throw new Error(command + " requires one job ID");
+  if (command === "--status") {
+    const job = await store.read(args[1]);
+    await reportUsage(store, job.account);
+    console.log(JSON.stringify(jobSummary(job)));
+  } else console.log(await resultForJob(args[1], store));
+}
+
+async function watchCommand(args: string[], store: JobStore): Promise<void> {
+  if (args.length !== 1) throw new Error("--watch takes no arguments");
+  const pending = (await store.list()).filter((job) => job.conversationId && job.status !== "completed" && job.status !== "failed");
+  await Promise.all(
+    pending.map(async (job) => {
+      try {
+        const answer = await resultForJob(job.id, store);
+        console.log(JSON.stringify({ jobId: job.id, status: "completed", answer }));
+      } catch (error) {
+        console.log(
+          JSON.stringify({
+            jobId: job.id,
+            status: (await store.read(job.id)).status,
+            error: redactSensitiveText(errorText(error)),
+          })
+        );
+        Deno.exitCode = 1;
+      }
+    })
+  );
+}
+
+async function promptCommand(args: string[], store: JobStore): Promise<void> {
+  const background = args[0] === "--background";
   let promptArgs = background ? args.slice(1) : args;
   if (promptArgs[0] === "--") promptArgs = promptArgs.slice(1);
   else if (promptArgs[0]?.startsWith("--")) {
@@ -1423,9 +1616,47 @@ export async function main(args: string[]): Promise<void> {
   if (!prompt) prompt = (await new Response(Deno.stdin.readable).text()).trim();
   if (!prompt) throw new Error("Provide a prompt as arguments or stdin");
   if (background) {
-    const job = await submitJob(prompt, store, (job) => console.error("GPT Pro job: " + job.id));
+    const job = await submitJob(prompt, store, (job) => {
+      console.error("GPT Pro job: " + job.id);
+    });
     console.log(JSON.stringify(jobSummary(job)));
   } else console.log(await run(prompt, store));
+}
+
+export async function main(args: string[]): Promise<void> {
+  let directory: URL | undefined;
+  if (args[0] === "--state-dir") {
+    if (!args[1]) throw new Error("--state-dir requires an absolute path");
+    directory = stateDirectory(args[1]);
+    args = args.slice(2);
+  }
+  const command = args[0];
+  if (command === "--help") {
+    console.log(HELP_TEXT);
+    return;
+  }
+  directory ??= stateDirectory();
+  const store = new JobStore(new URL(".gpt-pro-jobs/", directory));
+  switch (command) {
+    case "--auth-import":
+      await importAuthCommand(args, directory);
+      return;
+    case "--auth-check":
+      await authCheckCommand(args, store, directory);
+      return;
+    case "--jobs":
+      await jobsCommand(args, store);
+      return;
+    case "--status":
+    case "--result":
+      await jobLookupCommand(command, args, store);
+      return;
+    case "--watch":
+      await watchCommand(args, store);
+      return;
+    default:
+      await promptCommand(args, store);
+  }
 }
 
 if (import.meta.main) {
