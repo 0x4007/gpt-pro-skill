@@ -1,0 +1,19 @@
+{
+  "nodeModulesDir": "auto",
+  "tasks": {
+    "types": "deno types > .deno-types.d.ts",
+    "lint:deno": "deno lint",
+    "check": "deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts",
+    "test": "deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/",
+    "verify": "sh scripts/verify.sh"
+  },
+  "fmt": {
+    "exclude": [".agents", "*.md", "*.json", "*.mjs", "*.js", "*.ts", "*.lock"]
+  },
+  "lint": {
+    "exclude": ["node_modules", ".diagnostics", ".codex-worktrees"],
+    "rules": {
+      "exclude": ["no-empty"]
+    }
+  }
+}
