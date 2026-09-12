@@ -20,8 +20,8 @@ run() {
 # Regenerate Deno's ambient types first: without .deno-types.d.ts the type-aware
 # rules silently lose findings rather than erroring.
 run "deno types" deno task types
-run "prettier (format check)" npx --no-install prettier --check .
-run "eslint (template ruleset)" npx --no-install eslint .
+run "prettier (format check)" "$ROOT/node_modules/.bin/prettier" --check .
+run "eslint (template ruleset)" "$ROOT/node_modules/.bin/eslint" .
 run "deno lint" deno lint
 run "deno check" deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts
 run "deno test" deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/

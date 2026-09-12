@@ -1,5 +1,10 @@
 # Shared bootstrap for the dev-tooling scripts. Sourced, never executed directly.
 #
+# Why this exists: `npx` can install ESLint, but it cannot make the bare plugin
+# imports in eslint.config.mjs resolve -- Node resolves those from the config
+# file's location upward through node_modules. So node_modules is required no
+# matter what, and the scripts invoke the local binaries directly.
+#
 # node_modules does not shadow Deno here: this repo has no tsconfig.json (the
 # lint project is tsconfig.lint.json) and does not install @types/node. Those
 # are the only known vectors by which a local node_modules can override Deno's

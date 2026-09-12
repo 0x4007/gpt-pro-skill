@@ -2,11 +2,13 @@
 # Format with the ts-template Prettier config (printWidth 160).
 #   scripts/format.sh          -> write
 #   scripts/format.sh --check  -> verify only
+#
+# Runs the local binary rather than `npx`; see scripts/lint.sh for why.
 set -eu
 . "$(dirname -- "$0")/_bootstrap.sh"
 ensure_deps
 
 if [ "${1:-}" = "--check" ]; then
-  exec npx --no-install prettier --check .
+  exec "$ROOT/node_modules/.bin/prettier" --check .
 fi
-exec npx --no-install prettier --write .
+exec "$ROOT/node_modules/.bin/prettier" --write .
