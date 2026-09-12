@@ -19,8 +19,6 @@ export function stateDirectory(explicit?: string): URL {
 export async function ensurePrivateState(directory: URL): Promise<void> {
   await Deno.mkdir(directory, { recursive: true, mode: 0o700 });
   const info = await Deno.lstat(directory);
-  if (
-    !info.isDirectory || info.isSymlink ||
-    (info.mode !== null && (info.mode & 0o077) !== 0)
-  ) throw new Error("GPT Pro state directory must be owner-only (mode 0700)");
+  if (!info.isDirectory || info.isSymlink || (info.mode !== null && (info.mode & 0o077) !== 0))
+    throw new Error("GPT Pro state directory must be owner-only (mode 0700)");
 }

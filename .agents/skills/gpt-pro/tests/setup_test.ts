@@ -1,18 +1,11 @@
-import {
-  importWebSession,
-  loadWebSession,
-  parseSessionImport,
-} from "../scripts/ask-gpt-pro.ts";
+import { importWebSession, loadWebSession, parseSessionImport } from "../scripts/ask-gpt-pro.ts";
 import { stateDirectory } from "../scripts/state.ts";
 import { pathToFileURL } from "node:url";
 
 function fixture() {
   return {
-    accessToken: `e30.${
-      btoa(JSON.stringify({ sub: "fixture-subject", exp: 4102444800 }))
-    }.fixture`,
-    cookie:
-      "oai-did=fixture-device; __Secure-oai-is=ois1.fixture.AAAAAAAAAAAAAAAA.signature",
+    accessToken: `e30.${btoa(JSON.stringify({ sub: "fixture-subject", exp: 4102444800 }))}.fixture`,
+    cookie: "oai-did=fixture-device; __Secure-oai-is=ois1.fixture.AAAAAAAAAAAAAAAA.signature",
     headers: {
       "oai-device-id": "fixture-device",
       "oai-session-id": "fixture-session",
@@ -44,13 +37,7 @@ Deno.test("setup imports copied request headers and filters out captured challen
   if (pretty.accessToken !== v.accessToken) {
     throw new Error("Pretty JSON import failed");
   }
-  for (
-    const input of [
-      "curl 'SECRET'",
-      "{SECRET",
-      raw.replace("chatgpt.com", "example.com"),
-    ]
-  ) {
+  for (const input of ["curl 'SECRET'", "{SECRET", raw.replace("chatgpt.com", "example.com")]) {
     let failed = false;
     try {
       parseSessionImport(input);
@@ -78,7 +65,7 @@ Deno.test("portable auth storage survives a fresh loader and invalid imports pre
     try {
       await importWebSession("invalid", url);
     } catch {}
-    if (await Deno.readTextFile(new URL(".env", url)) !== before) {
+    if ((await Deno.readTextFile(new URL(".env", url))) !== before) {
       throw new Error("Invalid import destroyed credentials");
     }
     if (stateDirectory(dir).href !== url.href) {

@@ -1,8 +1,4 @@
-import {
-  estimateUsage,
-  subscriptionPlan,
-  usageForAccount,
-} from "../scripts/usage.ts";
+import { estimateUsage, subscriptionPlan, usageForAccount } from "../scripts/usage.ts";
 import { JobStore, type ProJob } from "../scripts/jobs.ts";
 import { pathToFileURL } from "node:url";
 
@@ -49,16 +45,18 @@ function body(plan = "pro", subscriptionPlan = "chatgptpro") {
 Deno.test("pacing uses published tier budgets and suppresses first-day noise", () => {
   const jobs = Array.from({ length: 30 }, () => job());
   const estimate = estimateUsage(jobs, account, subscription, DAY);
-  assert(
-    estimate.expectedByNow === 28.57 &&
-      estimate.projectedWeeklyAttempts === 210,
-  );
+  assert(estimate.expectedByNow === 28.57 && estimate.projectedWeeklyAttempts === 210);
   assert(estimate.paceStatus === "above_pace" && estimate.nudge);
   assert(estimate.providerResetAt === null);
-  const lite = estimateUsage(jobs, account, {
-    ...subscription,
-    plan: "pro_100",
-  }, DAY);
+  const lite = estimateUsage(
+    jobs,
+    account,
+    {
+      ...subscription,
+      plan: "pro_100",
+    },
+    DAY
+  );
   assert(lite.weeklyAllowance === 50 && lite.expectedByNow === 7.14);
   assert(estimateUsage(jobs, account, subscription, DAY - 1).nudge === null);
   assert(estimateUsage(jobs, account, undefined, DAY).weeklyAllowance === null);
@@ -67,8 +65,8 @@ Deno.test("pacing uses published tier budgets and suppresses first-day noise", (
       Array.from({ length: 200 }, () => job()),
       account,
       subscription,
-      0,
-    ).paceStatus === "local_allowance_reached",
+      0
+    ).paceStatus === "local_allowance_reached"
   );
 });
 
@@ -87,41 +85,17 @@ Deno.test("count attempts once, isolate accounts, exclude preparation and retrie
   };
   const rejected = { ...job(), status: "failed" as const };
   const other = { ...job(), account: "other" };
-  const jobs = [
-    first,
-    first,
-    preparing,
-    uncertain,
-    rejected,
-    other,
-    job(DAY * 9),
-  ];
-  assert(
-    estimateUsage(jobs, account, subscription, DAY).localSubmissionAttempts ===
-      3,
-  );
-  const rollover = estimateUsage(
-    [...jobs, job(DAY * 7)],
-    account,
-    subscription,
-    DAY * 8,
-  );
-  assert(
-    rollover.localSubmissionAttempts === 1 &&
-      rollover.windowStart === new Date(DAY * 7).toISOString(),
-  );
+  const jobs = [first, first, preparing, uncertain, rejected, other, job(DAY * 9)];
+  assert(estimateUsage(jobs, account, subscription, DAY).localSubmissionAttempts === 3);
+  const rollover = estimateUsage([...jobs, job(DAY * 7)], account, subscription, DAY * 8);
+  assert(rollover.localSubmissionAttempts === 1 && rollover.windowStart === new Date(DAY * 7).toISOString());
 });
 
 Deno.test("subscription detection requires matching active account and consistent aliases", () => {
   assert(subscriptionPlan(body(), "fixture") === "pro_200");
-  assert(
-    subscriptionPlan(body("prolite", "chatgptprolite"), "fixture") ===
-      "pro_100",
-  );
+  assert(subscriptionPlan(body("prolite", "chatgptprolite"), "fixture") === "pro_100");
   assert(subscriptionPlan(body(), "other") === "unknown");
-  assert(
-    subscriptionPlan(body("business", "business"), "fixture") === "unknown",
-  );
+  assert(subscriptionPlan(body("business", "business"), "fixture") === "unknown");
   const inactive = body();
   inactive.accounts.personal.entitlement.has_active_subscription = false;
   assert(subscriptionPlan(inactive, "fixture") === "unknown");
@@ -129,9 +103,7 @@ Deno.test("subscription detection requires matching active account and consisten
     accounts: { ...body().accounts, alias: inactive.accounts.personal },
   };
   assert(subscriptionPlan(ambiguous, "fixture") === "unknown");
-  assert(
-    subscriptionPlan({ accounts: { broken: null } }, "fixture") === "unknown",
-  );
+  assert(subscriptionPlan({ accounts: { broken: null } }, "fixture") === "unknown");
 });
 
 Deno.test("subscription cache serializes lookups, stores sanitized fields, and respects recent 429", async () => {
@@ -145,16 +117,11 @@ Deno.test("subscription cache serializes lookups, stores sanitized fields, and r
       session: {
         fetch: () => {
           requests++;
-          return Promise.resolve(
-            Response.json({ ...body(), secret: "must-not-cache" }),
-          );
+          return Promise.resolve(Response.json({ ...body(), secret: "must-not-cache" }));
         },
       },
     };
-    const results = await Promise.all([
-      usageForAccount(store, account, live),
-      usageForAccount(store, account, live),
-    ]);
+    const results = await Promise.all([usageForAccount(store, account, live), usageForAccount(store, account, live)]);
     assert(requests === 1 && results.every((r) => r.plan === "pro_200"));
     const cachePath = root + `/usage-${account}.json`;
     const cached = await Deno.readTextFile(cachePath);
@@ -165,10 +132,7 @@ Deno.test("subscription cache serializes lookups, stores sanitized fields, and r
     record.lastError = "HTTP 429";
     await store.save(record);
     await Deno.remove(cachePath);
-    assert(
-      (await usageForAccount(store, account, live)).plan === "unknown" &&
-        requests === 1,
-    );
+    assert((await usageForAccount(store, account, live)).plan === "unknown" && requests === 1);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

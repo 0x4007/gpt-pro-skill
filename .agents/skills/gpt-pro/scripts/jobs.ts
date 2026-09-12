@@ -1,13 +1,6 @@
 import { stateDirectory } from "./state.ts";
 export const POLL_WINDOW_MS = 6 * 60 * 60 * 1000;
-export type JobStatus =
-  | "preparing"
-  | "submitting"
-  | "pending"
-  | "completed"
-  | "failed"
-  | "uncertain"
-  | "timed_out";
+export type JobStatus = "preparing" | "submitting" | "pending" | "completed" | "failed" | "uncertain" | "timed_out";
 export interface ProJob {
   version: 1;
   id: string;
@@ -28,19 +21,9 @@ export interface ProJob {
   nextPollAt?: string;
 }
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const statuses = new Set([
-  "preparing",
-  "submitting",
-  "pending",
-  "completed",
-  "failed",
-  "uncertain",
-  "timed_out",
-]);
+const statuses = new Set(["preparing", "submitting", "pending", "completed", "failed", "uncertain", "timed_out"]);
 export class JobStore {
-  constructor(
-    readonly directory = new URL(".gpt-pro-jobs/", stateDirectory()),
-  ) {}
+  constructor(readonly directory = new URL(".gpt-pro-jobs/", stateDirectory())) {}
   private path(id: string, suffix = ".json"): URL {
     if (!ID.test(id)) throw new Error("Invalid GPT Pro job ID");
     return new URL(id + suffix, this.directory);
@@ -48,10 +31,8 @@ export class JobStore {
   private async initialize(): Promise<void> {
     await Deno.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const info = await Deno.lstat(this.directory);
-    if (
-      !info.isDirectory || info.isSymlink ||
-      (info.mode !== null && (info.mode & 0o077) !== 0)
-    ) throw new Error("GPT Pro job directory must be owner-only (mode 0700)");
+    if (!info.isDirectory || info.isSymlink || (info.mode !== null && (info.mode & 0o077) !== 0))
+      throw new Error("GPT Pro job directory must be owner-only (mode 0700)");
   }
   async create(prompt: string, account: string): Promise<ProJob> {
     await this.initialize();
@@ -77,10 +58,7 @@ export class JobStore {
   async read(id: string): Promise<ProJob> {
     const path = this.path(id);
     const info = await Deno.lstat(path);
-    if (
-      !info.isFile || info.isSymlink ||
-      (info.mode !== null && (info.mode & 0o077) !== 0)
-    ) throw new Error("GPT Pro job file must be owner-only (mode 0600)");
+    if (!info.isFile || info.isSymlink || (info.mode !== null && (info.mode & 0o077) !== 0)) throw new Error("GPT Pro job file must be owner-only (mode 0600)");
     let job: ProJob;
     try {
       job = JSON.parse(await Deno.readTextFile(path));
@@ -88,17 +66,18 @@ export class JobStore {
       throw new Error("Could not decode GPT Pro job record");
     }
     if (
-      job.version !== 1 || job.id !== id || !ID.test(job.messageId) ||
-      job.model !== "gpt-6-pro" || !statuses.has(job.status) ||
-      typeof job.account !== "string" || typeof job.prompt !== "string" ||
+      job.version !== 1 ||
+      job.id !== id ||
+      !ID.test(job.messageId) ||
+      job.model !== "gpt-6-pro" ||
+      !statuses.has(job.status) ||
+      typeof job.account !== "string" ||
+      typeof job.prompt !== "string" ||
       !Number.isFinite(job.pollCount) ||
-      (job.rateLimitCount !== undefined &&
-        (!Number.isSafeInteger(job.rateLimitCount) ||
-          job.rateLimitCount < 0)) ||
-      (job.nextPollAt !== undefined &&
-        (typeof job.nextPollAt !== "string" ||
-          !Number.isFinite(Date.parse(job.nextPollAt))))
-    ) throw new Error("Invalid GPT Pro job record");
+      (job.rateLimitCount !== undefined && (!Number.isSafeInteger(job.rateLimitCount) || job.rateLimitCount < 0)) ||
+      (job.nextPollAt !== undefined && (typeof job.nextPollAt !== "string" || !Number.isFinite(Date.parse(job.nextPollAt))))
+    )
+      throw new Error("Invalid GPT Pro job record");
     return job;
   }
   async save(job: ProJob): Promise<void> {
@@ -126,10 +105,7 @@ export class JobStore {
       throw error;
     }
   }
-  async withLock<T>(
-    id: string,
-    action: (job: ProJob) => Promise<T>,
-  ): Promise<T> {
+  async withLock<T>(id: string, action: (job: ProJob) => Promise<T>): Promise<T> {
     await this.initialize();
     const path = this.path(id, ".lock");
     const file = await Deno.open(path, {
@@ -149,13 +125,8 @@ export class JobStore {
     await this.initialize();
     const jobs: ProJob[] = [];
     for await (const entry of Deno.readDir(this.directory)) {
-      if (
-        entry.isFile && entry.name.endsWith(".json") &&
-        ID.test(entry.name.slice(0, -5))
-      ) jobs.push(await this.read(entry.name.slice(0, -5)));
+      if (entry.isFile && entry.name.endsWith(".json") && ID.test(entry.name.slice(0, -5))) jobs.push(await this.read(entry.name.slice(0, -5)));
     }
-    return jobs.sort((a, b) =>
-      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
-    );
+    return jobs.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }
 }
