@@ -1,10 +1,4 @@
-import {
-  answerForMessage,
-  clientObservation,
-  completedAnswer,
-  parseSseText,
-  redactSensitiveText,
-} from "../scripts/ask-gpt-pro.ts";
+import { answerForMessage, clientObservation, completedAnswer, parseSseText, redactSensitiveText } from "../scripts/ask-gpt-pro.ts";
 
 Deno.test("client observation reports the actual integrity cookie state", () => {
   const state = "ois1.example.ABCDEFGHIJKLMNOP.signature";
@@ -16,14 +10,8 @@ Deno.test("client observation reports the actual integrity cookie state", () => 
     [`__Secure-oai-is=${state}.extra`, "v1.s.i"],
     [`__Secure-oai-is=${state}${"a".repeat(2048)}`, "v1.s.i"],
     [`__Secure-oai-is=${state}`, "v1.s.p.ABCDEFGHIJKLMNOP"],
-    [
-      `oai-did=device; __Secure-oai-is=${state.replaceAll(".", "%2E")}`,
-      "v1.s.p.ABCDEFGHIJKLMNOP",
-    ],
-    [
-      `__Secure-oai-is=${state}; __Secure-oai-is=${state}`,
-      "v1.s.d.ABCDEFGHIJKLMNOP",
-    ],
+    [`oai-did=device; __Secure-oai-is=${state.replaceAll(".", "%2E")}`, "v1.s.p.ABCDEFGHIJKLMNOP"],
+    [`__Secure-oai-is=${state}; __Secure-oai-is=${state}`, "v1.s.d.ABCDEFGHIJKLMNOP"],
   ];
   for (const [cookie, expected] of fixtures) {
     if (clientObservation(cookie) !== expected) {
@@ -70,15 +58,10 @@ Deno.test("background answer must be final, complete, and belong to the requeste
 });
 
 Deno.test("completedAnswer rejects background handoffs and truncated streams", () => {
-  for (
-    const [raw, expected] of [
-      [
-        'data: {"type":"stream_handoff"}\n\ndata: [DONE]\n\n',
-        "background stream",
-      ],
-      ['data: {"o":"append","v":"Partial answer"}\n\n', "before completion"],
-    ]
-  ) {
+  for (const [raw, expected] of [
+    ['data: {"type":"stream_handoff"}\n\ndata: [DONE]\n\n', "background stream"],
+    ['data: {"o":"append","v":"Partial answer"}\n\n', "before completion"],
+  ]) {
     let message = "";
     try {
       completedAnswer(parseSseText(raw));
@@ -87,9 +70,7 @@ Deno.test("completedAnswer rejects background handoffs and truncated streams", (
     }
     if (!message.includes(expected)) throw new Error(`Expected ${expected}`);
   }
-  const answer = completedAnswer(parseSseText(
-    'data: {"o":"append","v":"Complete answer"}\n\ndata: [DONE]\n\n',
-  ));
+  const answer = completedAnswer(parseSseText('data: {"o":"append","v":"Complete answer"}\n\ndata: [DONE]\n\n'));
   if (answer !== "Complete answer") {
     throw new Error("Completed answer was lost");
   }
@@ -124,11 +105,7 @@ Deno.test("parseSseText collects assistant message parts and terminal marker", (
 });
 
 Deno.test("parseSseText supports append deltas", () => {
-  const parsed = parseSseText(
-    'event: delta\ndata: {"o":"append","v":"one"}\n\n' +
-      'event: delta\ndata: {"o":"append","v":" two"}\n\n' +
-      "data: [DONE]\n\n",
-  );
+  const parsed = parseSseText('event: delta\ndata: {"o":"append","v":"one"}\n\n' + 'event: delta\ndata: {"o":"append","v":" two"}\n\n' + "data: [DONE]\n\n");
   if (parsed.text !== "one two") {
     throw new Error(`unexpected append text: ${parsed.text}`);
   }
@@ -136,9 +113,7 @@ Deno.test("parseSseText supports append deltas", () => {
 
 Deno.test("redactSensitiveText removes auth and long token values", () => {
   const secret = "a".repeat(220);
-  const redacted = redactSensitiveText(
-    `Authorization: Bearer ${secret}\nopenai-sentinel-proof-token: ${secret}`,
-  );
+  const redacted = redactSensitiveText(`Authorization: Bearer ${secret}\nopenai-sentinel-proof-token: ${secret}`);
   if (redacted.includes(secret)) {
     throw new Error("secret remained in redacted output");
   }

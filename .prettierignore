@@ -1,0 +1,10 @@
+.deno-types.d.ts
+.diagnostics/
+.codex-worktrees/
+.gpt-pro-jobs/
+.git/
+*.har
+.env
+.env.*
+deno.lock
+package-lock.json

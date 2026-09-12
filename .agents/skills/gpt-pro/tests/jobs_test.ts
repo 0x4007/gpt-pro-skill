@@ -1,9 +1,4 @@
-import {
-  answerForMessage,
-  captureConversation,
-  pollJob,
-  resultForJob,
-} from "../scripts/ask-gpt-pro.ts";
+import { answerForMessage, captureConversation, pollJob, resultForJob } from "../scripts/ask-gpt-pro.ts";
 import { JobStore, POLL_WINDOW_MS, type ProJob } from "../scripts/jobs.ts";
 
 function fixture(id = crypto.randomUUID()): ProJob {
@@ -46,47 +41,46 @@ function conversation(job: ProJob, answer = "fixture-answer") {
 
 Deno.test("six-hour polling expires without submitting and can resume the same job", async () => {
   const job = fixture();
-  let clock = 0, calls = 0;
+  let clock = 0,
+    calls = 0;
+  const conversationId = job.conversationId;
+  if (conversationId === undefined) throw new Error("Fixture job has no conversation ID");
   const fetcher = {
-    fetch: async (input: string | URL, init?: RequestInit) => {
+    fetch: (input: string | URL, init?: RequestInit): Promise<Response> => {
       calls++;
       if (init?.method && init.method !== "GET") {
         throw new Error("Unexpected mutation");
       }
-      if (!String(input).endsWith(job.conversationId!)) {
+      if (!String(input).endsWith(conversationId)) {
         throw new Error("Wrong conversation");
       }
-      return Response.json({ mapping: {} });
+      return Promise.resolve(Response.json({ mapping: {} }));
     },
   };
   let timedOut = false;
   try {
     await pollJob(fetcher, job, async () => {}, {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         clock += ms;
+        return Promise.resolve();
       },
     });
   } catch {
     timedOut = true;
   }
-  if (
-    !timedOut || clock !== POLL_WINDOW_MS || POLL_WINDOW_MS !== 21600000 ||
-    job.status !== "timed_out" || calls < 700
-  ) throw new Error("Incorrect six-hour window");
-  const resumed = await pollJob(
-    { fetch: () => Promise.resolve(Response.json(conversation(job))) },
-    job,
-    async () => {},
-  );
-  if (resumed !== "fixture-answer" || job.status as string !== "completed") {
+  if (!timedOut || clock !== POLL_WINDOW_MS || POLL_WINDOW_MS !== 21600000 || job.status !== "timed_out" || calls < 700)
+    throw new Error("Incorrect six-hour window");
+  const resumed = await pollJob({ fetch: () => Promise.resolve(Response.json(conversation(job))) }, job, async () => {});
+  if (resumed !== "fixture-answer" || (job.status as string) !== "completed") {
     throw new Error("Existing job could not resume");
   }
 });
 
 Deno.test("transient GET failures honor Retry-After; auth failures preserve resumable state", async () => {
   const job = fixture();
-  let clock = 0, step = 0;
+  let clock = 0,
+    step = 0;
   const delays: number[] = [];
   const answer = await pollJob(
     {
@@ -98,13 +92,11 @@ Deno.test("transient GET failures honor Retry-After; auth failures preserve resu
             new Response(null, {
               status: 429,
               headers: { "retry-after": "120" },
-            }),
+            })
           );
         }
         if (step === 3) {
-          return Promise.resolve(
-            new Response(null, { status: 503 }),
-          );
+          return Promise.resolve(new Response(null, { status: 503 }));
         }
         return Promise.resolve(Response.json(conversation(job)));
       },
@@ -113,11 +105,12 @@ Deno.test("transient GET failures honor Retry-After; auth failures preserve resu
     async () => {},
     {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         delays.push(ms);
         clock += ms;
+        return Promise.resolve();
       },
-    },
+    }
   );
   if (answer !== "fixture-answer" || delays[1] !== 120000) {
     throw new Error("Read retry policy failed");
@@ -125,56 +118,48 @@ Deno.test("transient GET failures honor Retry-After; auth failures preserve resu
   const denied = fixture();
   let rejected = false;
   try {
-    await pollJob(
-      { fetch: () => Promise.resolve(new Response(null, { status: 401 })) },
-      denied,
-      async () => {},
-      {
-        sleep: () => {
-          throw new Error("Must not retry auth failure");
-        },
+    await pollJob({ fetch: () => Promise.resolve(new Response(null, { status: 401 })) }, denied, async () => {}, {
+      sleep: () => {
+        throw new Error("Must not retry auth failure");
       },
-    );
+    });
   } catch {
     rejected = true;
   }
-  if (
-    !rejected || denied.status !== "pending" || !denied.conversationId ||
-    !denied.lastError?.includes("401")
-  ) throw new Error("Auth failure lost resumable state");
+  if (!rejected || denied.status !== "pending" || !denied.conversationId || !denied.lastError?.includes("401"))
+    throw new Error("Auth failure lost resumable state");
 });
 
 Deno.test("repeated 429s back off without Retry-After and reset after recovery", async () => {
   const job = fixture();
-  let clock = 0, calls = 0;
+  let clock = 0,
+    calls = 0;
   const delays: number[] = [];
   const answer = await pollJob(
     {
       fetch: () => {
         calls++;
-        return Promise.resolve(
-          calls <= 6
-            ? Response.json({ detail: "Too many requests" }, { status: 429 })
-            : Response.json(conversation(job)),
-        );
+        return Promise.resolve(calls <= 6 ? Response.json({ detail: "Too many requests" }, { status: 429 }) : Response.json(conversation(job)));
       },
     },
     job,
     async () => {},
     {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         delays.push(ms);
         clock += ms;
+        return Promise.resolve();
       },
-    },
+    }
   );
   if (
     answer !== "fixture-answer" ||
-    JSON.stringify(delays) !==
-      JSON.stringify([60000, 120000, 240000, 480000, 900000, 900000]) ||
-    job.rateLimitCount !== undefined || job.nextPollAt !== undefined
-  ) throw new Error("429 backoff or recovery reset failed");
+    JSON.stringify(delays) !== JSON.stringify([60000, 120000, 240000, 480000, 900000, 900000]) ||
+    job.rateLimitCount !== undefined ||
+    job.nextPollAt !== undefined
+  )
+    throw new Error("429 backoff or recovery reset failed");
 });
 
 Deno.test("interrupted retrieval preserves Retry-After and backoff in the job store", async () => {
@@ -192,7 +177,7 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
               new Response(null, {
                 status: 429,
                 headers: { "retry-after": new Date(180000).toUTCString() },
-              }),
+              })
             ),
         },
         job,
@@ -202,14 +187,11 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
           sleep: () => {
             throw new Error("fixture process interruption");
           },
-        },
+        }
       );
     } catch {}
     const resumed = await store.read(job.id);
-    if (
-      resumed.rateLimitCount !== 1 ||
-      Date.parse(resumed.nextPollAt ?? "") !== 180000
-    ) {
+    if (resumed.rateLimitCount !== 1 || Date.parse(resumed.nextPollAt ?? "") !== 180000) {
       throw new Error("Cooldown was not persisted before sleep");
     }
     let calls = 0;
@@ -218,26 +200,21 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
       {
         fetch: () => {
           if (clock < 180000) throw new Error("Read before Retry-After");
-          return Promise.resolve(
-            ++calls === 1
-              ? new Response(null, { status: 429 })
-              : Response.json(conversation(resumed)),
-          );
+          return Promise.resolve(++calls === 1 ? new Response(null, { status: 429 }) : Response.json(conversation(resumed)));
         },
       },
       resumed,
       (value) => store.save(value),
       {
         now: () => clock,
-        sleep: async (ms) => {
+        sleep: (ms) => {
           delays.push(ms);
           clock += ms;
+          return Promise.resolve();
         },
-      },
+      }
     );
-    if (
-      calls !== 2 || JSON.stringify(delays) !== JSON.stringify([180000, 120000])
-    ) {
+    if (calls !== 2 || JSON.stringify(delays) !== JSON.stringify([180000, 120000])) {
       throw new Error("Resume reset the saved cooldown or backoff");
     }
   } finally {
@@ -248,7 +225,8 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
 Deno.test("saved cooldown beyond the poll window makes no request", async () => {
   const job = fixture();
   job.nextPollAt = new Date(POLL_WINDOW_MS * 2).toISOString();
-  let clock = 0, calls = 0;
+  let clock = 0,
+    calls = 0;
   try {
     await pollJob(
       {
@@ -261,27 +239,22 @@ Deno.test("saved cooldown beyond the poll window makes no request", async () => 
       async () => {},
       {
         now: () => clock,
-        sleep: async (ms) => {
+        sleep: (ms) => {
           clock += ms;
+          return Promise.resolve();
         },
-      },
+      }
     );
   } catch {}
-  if (
-    calls !== 0 || clock !== POLL_WINDOW_MS || job.status !== "timed_out" ||
-    Date.parse(job.nextPollAt) !== POLL_WINDOW_MS * 2
-  ) {
+  if (calls !== 0 || clock !== POLL_WINDOW_MS || job.status !== "timed_out" || Date.parse(job.nextPollAt) !== POLL_WINDOW_MS * 2) {
     throw new Error("Saved cooldown did not respect the bounded poll window");
   }
 });
 
 Deno.test("stream capture persists an early conversation ID before an interrupted stream", async () => {
-  const chunks = [
-    'data: {"conversation_',
-    'id":"fixture-conversation"}\r',
-    "\n\r\n",
-  ];
-  let index = 0, saved = "";
+  const chunks = ['data: {"conversation_', 'id":"fixture-conversation"}\r', "\n\r\n"];
+  let index = 0,
+    saved = "";
   const stream = new ReadableStream<Uint8Array>({
     pull(controller) {
       if (index < chunks.length) {
@@ -291,8 +264,9 @@ Deno.test("stream capture persists an early conversation ID before an interrupte
   });
   let failed = false;
   try {
-    await captureConversation(new Response(stream), async (id) => {
+    await captureConversation(new Response(stream), (id) => {
       saved = id;
+      return Promise.resolve();
     });
   } catch {
     failed = true;
@@ -303,31 +277,30 @@ Deno.test("stream capture persists an early conversation ID before an interrupte
 });
 
 Deno.test("handoff closes the stream without waiting for terminal response", async () => {
-  let cancelled = false, saved = "";
+  const cancelCalls: boolean[] = [];
+  let saved = "";
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(
-        new TextEncoder().encode(
-          'data: {"type":"stream_handoff","conversation_id":"fixture-conversation"}\n\n',
-        ),
-      );
+      controller.enqueue(new TextEncoder().encode('data: {"type":"stream_handoff","conversation_id":"fixture-conversation"}\n\n'));
     },
     cancel() {
-      cancelled = true;
+      cancelCalls.push(true);
     },
   });
-  await captureConversation(new Response(stream), async (id) => {
+  await captureConversation(new Response(stream), (id) => {
     saved = id;
+    return Promise.resolve();
   });
-  if (!cancelled || saved !== "fixture-conversation") {
+  if (cancelCalls.length !== 1 || saved !== "fixture-conversation") {
     throw new Error("Handoff did not detach safely");
   }
 });
 
 Deno.test("answer matching survives a later turn and rejects ambiguous or wrong-model finals", () => {
   const job = fixture();
-  const value: any = conversation(job);
-  value.mapping.later = {
+  const value = conversation(job);
+  const nodes: Record<string, unknown> = value.mapping;
+  nodes.later = {
     parent: "answer",
     message: { id: "later-user", author: { role: "user" } },
   };
@@ -335,12 +308,13 @@ Deno.test("answer matching survives a later turn and rejects ambiguous or wrong-
   if (answerForMessage(value, job.messageId) !== "fixture-answer") {
     throw new Error("Later turn hid the matching answer");
   }
-  value.mapping.alternative = structuredClone(value.mapping.answer);
-  value.mapping.alternative.message.content.parts = ["different-answer"];
+  const alternative = structuredClone(value.mapping.answer);
+  alternative.message.content.parts = ["different-answer"];
+  nodes.alternative = alternative;
   if (answerForMessage(value, job.messageId) !== undefined) {
     throw new Error("Ambiguous result accepted");
   }
-  delete value.mapping.alternative;
+  delete nodes.alternative;
   value.mapping.answer.message.metadata.model_slug = "other-model";
   if (answerForMessage(value, job.messageId) !== undefined) {
     throw new Error("Wrong model accepted");
@@ -352,10 +326,7 @@ Deno.test("private job store isolates concurrent jobs and resumes cached results
   await Deno.chmod(dir, 0o700);
   const store = new JobStore(new URL("file://" + dir + "/"));
   try {
-    const [a, b] = await Promise.all([
-      store.create("prompt-a", "account"),
-      store.create("prompt-b", "account"),
-    ]);
+    const [a, b] = await Promise.all([store.create("prompt-a", "account"), store.create("prompt-b", "account")]);
     await Promise.all(
       [a, b].map((job) =>
         store.withLock(job.id, async (current) => {
@@ -363,13 +334,11 @@ Deno.test("private job store isolates concurrent jobs and resumes cached results
           current.answer = "answer-" + current.prompt;
           await store.save(current);
         })
-      ),
+      )
     );
     const reloaded = new JobStore(store.directory);
-    if (
-      await resultForJob(a.id, reloaded) !== "answer-prompt-a" ||
-      await resultForJob(b.id, reloaded) !== "answer-prompt-b"
-    ) throw new Error("Results crossed job boundaries");
+    if ((await resultForJob(a.id, reloaded)) !== "answer-prompt-a" || (await resultForJob(b.id, reloaded)) !== "answer-prompt-b")
+      throw new Error("Results crossed job boundaries");
     await Promise.all(
       Array.from({ length: 5 }, () =>
         store.withLock(a.id, async (job) => {
@@ -377,7 +346,8 @@ Deno.test("private job store isolates concurrent jobs and resumes cached results
           await new Promise((resolve) => setTimeout(resolve, 1));
           job.pollCount = before + 1;
           await store.save(job);
-        })),
+        })
+      )
     );
     if ((await store.read(a.id)).pollCount !== 5) {
       throw new Error("Concurrent writers lost an update");
@@ -403,7 +373,9 @@ Deno.test("private job store isolates concurrent jobs and resumes cached results
 
 Deno.test("failure to persist a completed answer is not hidden as a network retry", async () => {
   const job = fixture();
-  let saves = 0, calls = 0, failed = false;
+  let saves = 0,
+    calls = 0,
+    failed = false;
   try {
     await pollJob(
       {
@@ -413,9 +385,10 @@ Deno.test("failure to persist a completed answer is not hidden as a network retr
         },
       },
       job,
-      async () => {
+      () => {
         if (++saves === 2) throw new Error("disk full");
-      },
+        return Promise.resolve();
+      }
     );
   } catch {
     failed = true;
@@ -430,26 +403,19 @@ Deno.test("an answer arriving after 45 minutes is collected before the six-hour 
   let clock = 0;
   const answer = await pollJob(
     {
-      fetch: () =>
-        Promise.resolve(Response.json(
-          clock >= 45 * 60 * 1000
-            ? conversation(job, "late-answer")
-            : { mapping: {} },
-        )),
+      fetch: () => Promise.resolve(Response.json(clock >= 45 * 60 * 1000 ? conversation(job, "late-answer") : { mapping: {} })),
     },
     job,
     async () => {},
     {
       now: () => clock,
-      sleep: async (ms) => {
+      sleep: (ms) => {
         clock += ms;
+        return Promise.resolve();
       },
-    },
+    }
   );
-  if (
-    answer !== "late-answer" || clock < 45 * 60 * 1000 ||
-    clock >= POLL_WINDOW_MS
-  ) throw new Error("Long-running result was lost");
+  if (answer !== "late-answer" || clock < 45 * 60 * 1000 || clock >= POLL_WINDOW_MS) throw new Error("Long-running result was lost");
 });
 
 Deno.test("jobs without a conversation handle are never automatically resubmitted", async () => {
@@ -463,14 +429,7 @@ Deno.test("jobs without a conversation handle are never automatically resubmitte
     throw new Error("Network must not be used");
   };
   try {
-    for (
-      const status of [
-        "preparing",
-        "submitting",
-        "uncertain",
-        "failed",
-      ] as const
-    ) {
+    for (const status of ["preparing", "submitting", "uncertain", "failed"] as const) {
       const job = await store.create("fixture-prompt", "fixture-account");
       await store.withLock(job.id, async (value) => {
         value.status = status;

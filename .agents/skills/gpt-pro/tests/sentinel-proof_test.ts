@@ -1,8 +1,4 @@
-import {
-  ChatSession,
-  conversationBody,
-  SentinelHarness,
-} from "../scripts/ask-gpt-pro.ts";
+import { ChatSession, conversationBody, SentinelHarness } from "../scripts/ask-gpt-pro.ts";
 
 const sdk = `
 if (document.cookie.includes("PRIVATE_AUTH_FIXTURE")) throw new Error("SDK can read HttpOnly credentials");
@@ -29,11 +25,8 @@ Deno.test("Sentinel finalization sends the SDK enforcement token, not its raw an
   let step = 0;
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
-    if (
-      !request.headers.get("cookie")?.includes(
-        "__Secure-next-auth.session-token=PRIVATE_AUTH_FIXTURE",
-      )
-    ) throw new Error("SDK changed the HTTP authentication cookie");
+    if (!request.headers.get("cookie")?.includes("__Secure-next-auth.session-token=PRIVATE_AUTH_FIXTURE"))
+      throw new Error("SDK changed the HTTP authentication cookie");
     const expected = [
       "/backend-api/sentinel/sdk.js",
       "/sentinel/fixture/sdk.js",
@@ -62,17 +55,14 @@ Deno.test("Sentinel finalization sends the SDK enforcement token, not its raw an
         turnstile: { required: false },
       });
     }
-    if (
-      body.prepare_token !== "fixture-prepare" ||
-      body.proofofwork !== "gAAAAABfixture-enforcement-proof~S"
-    ) throw new Error("Finalization lost protocol framing or binding");
+    if (body.prepare_token !== "fixture-prepare" || body.proofofwork !== "gAAAAABfixture-enforcement-proof~S")
+      throw new Error("Finalization lost protocol framing or binding");
     return Response.json({ token: "fixture-finalized-token" });
   };
   try {
     const session = new ChatSession({
       accessToken: "fixture-token",
-      cookie:
-        "oai-did=fixture; __Secure-next-auth.session-token=PRIVATE_AUTH_FIXTURE",
+      cookie: "oai-did=fixture; __Secure-next-auth.session-token=PRIVATE_AUTH_FIXTURE",
       headers: {
         "oai-device-id": "fixture",
         "oai-session-id": "fixture-session",
@@ -90,13 +80,18 @@ Deno.test("Sentinel finalization sends the SDK enforcement token, not its raw an
 });
 
 Deno.test("conversation uses the browser's timezone-offset sign", () => {
-  const original = Date.prototype.getTimezoneOffset;
+  // conversationBody reads new Date().getTimezoneOffset() directly and exposes no seam to
+  // inject a clock, and a UTC machine would report 0, which cannot detect a reversed sign.
+  // The built-in is patched for this assertion only and restored from the descriptor taken here.
+  const original = Object.getOwnPropertyDescriptor(Date.prototype, "getTimezoneOffset")?.value as (() => number) | undefined;
+  if (original === undefined) {
+    throw new Error("Date.prototype.getTimezoneOffset is not available");
+  }
   Date.prototype.getTimezoneOffset = () => 240;
   try {
-    if (
-      conversationBody("fixture-prompt", "fixture-message")
-        .timezone_offset_min !== 240
-    ) throw new Error("Timezone offset sign was reversed");
+    if (conversationBody("fixture-prompt", "fixture-message").timezone_offset_min !== 240) {
+      throw new Error("Timezone offset sign was reversed");
+    }
   } finally {
     Date.prototype.getTimezoneOffset = original;
   }

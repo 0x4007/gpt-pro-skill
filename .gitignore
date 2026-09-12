@@ -5,3 +5,14 @@ auth.json
 .diagnostics/
 *.har
 .DS_Store
+
+# generated: `deno task types`
+.deno-types.d.ts
+
+# dev tooling
+node_modules/
+.npm-cache/
+.bun-cache/
+
+# git worktrees
+.codex-worktrees/
