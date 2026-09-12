@@ -39,12 +39,14 @@ Deno.test("setup imports copied request headers and filters out captured challen
   }
   for (const input of ["curl 'SECRET'", "{SECRET", raw.replace("chatgpt.com", "example.com")]) {
     let failed = false;
+    let leaked = false;
     try {
       parseSessionImport(input);
     } catch (e) {
       failed = true;
-      if (String(e).includes("SECRET")) throw new Error("Import leaked input");
+      leaked = String(e).includes("SECRET");
     }
+    if (leaked) throw new Error("Import leaked input");
     if (!failed) throw new Error("Invalid import accepted");
   }
 });

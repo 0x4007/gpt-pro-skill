@@ -83,14 +83,14 @@ Deno.test("invalid web snapshots fail without exposing credential content", () =
   }
   for (const input of inputs) {
     let rejected = false;
+    let exposed = false;
     try {
       parseWebSession(input);
     } catch (error) {
       rejected = true;
-      if (!(error instanceof Error) || error.message.includes("SECRET")) {
-        throw new Error("Credential exposed in error");
-      }
+      exposed = !(error instanceof Error) || error.message.includes("SECRET");
     }
+    if (exposed) throw new Error("Credential exposed in error");
     if (!rejected) throw new Error("Invalid snapshot accepted");
   }
 });

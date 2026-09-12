@@ -1,6 +1,6 @@
 import { stateDirectory } from "./state.ts";
 export const POLL_WINDOW_MS = 6 * 60 * 60 * 1000;
-export type JobStatus = "preparing" | "submitting" | "pending" | "completed" | "failed" | "uncertain" | "timed_out";
+type JobStatus = "preparing" | "submitting" | "pending" | "completed" | "failed" | "uncertain" | "timed_out";
 export interface ProJob {
   version: 1;
   id: string;

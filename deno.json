@@ -1,5 +1,4 @@
 {
-  "nodeModulesDir": "auto",
   "tasks": {
     "check": "deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts",
     "knip": "sh scripts/knip.sh",
@@ -16,5 +15,6 @@
     "rules": {
       "exclude": ["no-empty"]
     }
-  }
+  },
+  "nodeModulesDir": "manual"
 }

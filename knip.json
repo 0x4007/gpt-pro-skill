@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [".agents/skills/gpt-pro/scripts/ask-gpt-pro.ts", ".agents/skills/gpt-pro/scripts/authenticate.ts", ".agents/skills/gpt-pro/tests/**/*_test.ts"],
   "project": [".agents/skills/gpt-pro/**/*.ts"],
   "includeEntryExports": true,

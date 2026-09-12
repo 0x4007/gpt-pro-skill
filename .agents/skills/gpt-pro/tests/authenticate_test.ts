@@ -48,14 +48,14 @@ Deno.test("native cookie decryption validates encryption and domain binding", ()
     [Buffer.from("v20PRIVATE_FIXTURE"), ".chatgpt.com", 24],
   ] as const) {
     let rejected = false;
+    let leaked = false;
     try {
       decryptCookie(value, host, key, version);
     } catch (error) {
       rejected = true;
-      if (String(error).includes("PRIVATE_FIXTURE")) {
-        throw new Error("Cookie leaked into error");
-      }
+      leaked = String(error).includes("PRIVATE_FIXTURE");
     }
+    if (leaked) throw new Error("Cookie leaked into error");
     if (!rejected) throw new Error("Invalid protection accepted");
   }
 });
@@ -95,6 +95,7 @@ Deno.test("renewal rejects account changes and throttling without retries", asyn
   for (const response of [Response.json({ accessToken: token("another-account") }), new Response("PRIVATE_FIXTURE", { status: 429 })]) {
     let calls = 0;
     let rejected = false;
+    let leaked = false;
     try {
       await sessionFromCookies(cookie, "fixture-agent", fixture(), () => {
         calls++;
@@ -102,10 +103,9 @@ Deno.test("renewal rejects account changes and throttling without retries", asyn
       });
     } catch (error) {
       rejected = true;
-      if (String(error).includes("PRIVATE_FIXTURE")) {
-        throw new Error("Server body leaked");
-      }
+      leaked = String(error).includes("PRIVATE_FIXTURE");
     }
+    if (leaked) throw new Error("Server body leaked");
     if (!rejected || calls !== 1) {
       throw new Error("Failed renewal was accepted or retried");
     }
