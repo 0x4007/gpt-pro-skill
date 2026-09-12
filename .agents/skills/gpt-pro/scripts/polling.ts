@@ -16,7 +16,7 @@ import {
   safeResponseSummary,
 } from "./shared.ts";
 
-export interface PollOptions {
+interface PollOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }

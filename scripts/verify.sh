@@ -22,6 +22,7 @@ run() {
 run "deno types" deno task types
 run "prettier (format check)" "$ROOT/node_modules/.bin/prettier" --check .
 run "eslint (template ruleset)" "$ROOT/node_modules/.bin/eslint" .
+run "knip (unused files/exports/deps)" "$ROOT/node_modules/.bin/knip"
 run "deno lint" deno lint
 run "deno check" deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts
 run "deno test" deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/

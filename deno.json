@@ -1,10 +1,11 @@
 {
   "nodeModulesDir": "auto",
   "tasks": {
-    "types": "deno types > .deno-types.d.ts",
-    "lint:deno": "deno lint",
     "check": "deno check .agents/skills/gpt-pro/scripts/ask-gpt-pro.ts",
+    "knip": "sh scripts/knip.sh",
+    "lint:deno": "deno lint",
     "test": "deno test --allow-read --allow-write .agents/skills/gpt-pro/tests/",
+    "types": "deno types > .deno-types.d.ts",
     "verify": "sh scripts/verify.sh"
   },
   "fmt": {

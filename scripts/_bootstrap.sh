@@ -14,7 +14,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT" || exit 1
 
 deps_ready() {
-  [ -x node_modules/.bin/eslint ] && [ -x node_modules/.bin/prettier ]
+  [ -x node_modules/.bin/eslint ] && [ -x node_modules/.bin/prettier ] && [ -x node_modules/.bin/knip ]
 }
 
 ensure_deps() {

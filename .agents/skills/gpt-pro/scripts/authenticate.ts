@@ -351,7 +351,7 @@ async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
   return await sessionFromCookies(cookie, userAgent);
 }
 
-export async function authenticate(directory: URL): Promise<void> {
+async function authenticate(directory: URL): Promise<void> {
   const profiles = await candidates();
   if (!profiles.length) {
     throw new AuthenticationError(

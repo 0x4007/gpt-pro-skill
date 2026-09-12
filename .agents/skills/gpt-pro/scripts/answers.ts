@@ -1,6 +1,6 @@
 import { assertRecord, type JsonObject, MODEL, MODEL_RESPONSE_CONTRACTS, objectValue } from "./shared.ts";
 
-export interface ParsedSse {
+interface ParsedSse {
   text: string;
   terminal: boolean;
   eventTypes: string[];

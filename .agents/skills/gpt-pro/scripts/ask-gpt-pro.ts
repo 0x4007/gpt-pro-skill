@@ -3,8 +3,8 @@ import { JobStore, type ProJob } from "./jobs.ts";
 import { reportUsage } from "./usage.ts";
 import { ChatSession, importWebSession, loadWebSession, parseSessionImport, parseWebSession, type WebSession } from "./session.ts";
 import { SentinelHarness } from "./sentinel.ts";
-import { answerForMessage, completedAnswer, conversationBody, parseSseText, type ParsedSse } from "./answers.ts";
-import { accountIdForSession, accountIdentity, captureConversation, pollJob, resultForJob, run, submitJob, type PollOptions } from "./polling.ts";
+import { answerForMessage, completedAnswer, conversationBody, parseSseText } from "./answers.ts";
+import { accountIdForSession, accountIdentity, captureConversation, pollJob, resultForJob, run, submitJob } from "./polling.ts";
 import { CHATGPT_ORIGIN, clientObservation, errorText, redactSensitiveText } from "./shared.ts";
 
 // Public API: re-exported from this entry point so scripts/authenticate.ts and the tests keep
@@ -24,11 +24,9 @@ export {
   pollJob,
   redactSensitiveText,
   resultForJob,
-  run,
   SentinelHarness,
-  submitJob,
 };
-export type { ParsedSse, PollOptions, WebSession };
+export type { WebSession };
 
 function jobSummary(job: ProJob) {
   return {
@@ -138,7 +136,7 @@ async function promptCommand(args: string[], store: JobStore): Promise<void> {
   } else console.log(await run(prompt, store));
 }
 
-export async function main(args: string[]): Promise<void> {
+async function main(args: string[]): Promise<void> {
   let directory: URL | undefined;
   if (args[0] === "--state-dir") {
     if (!args[1]) throw new Error("--state-dir requires an absolute path");
