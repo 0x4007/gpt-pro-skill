@@ -1,5 +1,56 @@
 # Onboarding implementation checkpoint
 
+## Windows capability investigation, 07:38 UTC
+
+The previous turn made progress: committed real profile-cancellation acceptance
+as `13b9d47ac49ada4dd71eaa5ae7bc2620e202b40a`, pushed to the same draft PR, with
+a clean canonical worktree. The installed retrieval process was still live at
+07:37; no installation replacement or interruption was attempted.
+
+Fresh primary-source investigation identifies an existing Firefox sign-in as a
+candidate Windows adapter, subject to the owner's browser choice and live host:
+
+- [Mozilla cookie storage source](https://github.com/mozilla-firefox/firefox/blob/39c4518103985d600a5d8336490b401fc8a48467/netwerk/cookie/CookiePersistentStorage.cpp)
+  binds `Cookie::Value()` directly to the SQLite `value` column. Current schema
+  is 17. Version 15 to 16 changes expiry from seconds to milliseconds; a reader
+  must not apply Chromium's 1601 timestamp convention or assume one Firefox
+  expiry unit across versions. This source observation is not live Windows
+  authentication evidence and does not establish future storage formats.
+- [Mozilla profile discovery](https://github.com/mozilla-firefox/firefox/blob/main/toolkit/profile/nsToolkitProfileService.cpp)
+  uses `profiles.ini` entries with `IsRelative`, `Path`, and `Name`. Discover
+  metadata first and require explicit selection when several eligible profiles
+  exist. Only the selected profile's allowed ChatGPT cookie values may be read.
+  Reject unsupported schema, expired cookies, non-root paths, and partition or
+  container origin attributes outside the explicitly supported context. Do not
+  copy the database, read passwords, or disable any Firefox setting.
+- [Deno permissions](https://github.com/denoland/deno/blob/main/cli/tsc/dts/lib.deno.ns.d.ts)
+  explicitly state that Windows chmod does not distinguish owner, group, and
+  others. The current `ensurePrivateState` mode check therefore does not prove
+  Windows privacy. Authentication and jobs both create files with mode 0600;
+  credential temporary files and final renamed files need Windows ACL evidence.
+- [Microsoft icacls documentation](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls)
+  distinguishes DACL inspection, explicit grants, and inherited entries.
+  `icacls /verify` checks structural validity, not owner-only access. Removing
+  inheritance alone can retain explicit grants to other users, so neither
+  command result alone is sufficient proof of private storage.
+
+Proposed acceptance slice: reuse a normal existing Firefox ChatGPT login on a
+Windows computer, discover it through registered profile metadata, read only
+allowlisted cookies, verify the session without a model request, then save only
+after checking the state directory owner and effective DACL. For a new directory,
+create and verify private ACLs before writing any credentials. For pre-existing
+insecure state, stop rather than silently rewriting unrelated permissions.
+Verify that new temporary files inherit private access and renamed files retain
+it; use a second ordinary Windows user to demonstrate denied credential access.
+Reject reparse-point storage and unknown ACL forms until supported. Keep the
+existing entrypoint and account/job preservation checks.
+
+This is a concrete candidate, not implemented or verified support. No Windows
+host is established, no browser installation was made, and no external credential
+transfer is approved. The owner has been asked whether to use Firefox and whether
+a Windows computer is available. Dependent Windows setup waits for that answer;
+headless pairing still needs its separate sender/destination/transport decision.
+
 ## Current continuation, 07:36 UTC
 
 This section supersedes historical delivery and lane-state statements below.
