@@ -16,13 +16,30 @@ $skill-installer install https://github.com/0x4007/gpt-pro-skill/tree/main/.agen
 SKILL_DIR="$HOME/.agents/skills/gpt-pro"
 ```
 
-Sign in on macOS first, using an existing ChatGPT session in your browser:
+Connect using an existing ChatGPT session. The same command first verifies saved
+authentication or renews an expired token, then uses local browser discovery when
+no saved session exists:
 
 ```sh
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write \
-  --allow-run=/usr/bin/security --allow-net=chatgpt.com \
+  --allow-run=/usr/bin/security,/usr/bin/chromium,/usr/bin/google-chrome,/usr/bin/brave-browser,/usr/bin/microsoft-edge,/usr/bin/secret-tool --allow-net=chatgpt.com \
   "$SKILL_DIR/scripts/authenticate.ts"
 ```
+
+Multiple signed-in profiles require an explicit choice in an interactive terminal.
+If saved authentication is rejected, sign in again in your browser and rerun
+interactively; reconnection requires a changed sign-in for the same account. No
+model prompt is sent during authentication. Failed connections preserve credentials
+and existing jobs. On Linux, Secret Service may ask for normal desktop consent;
+the helper only looks up the selected browser's existing key and never creates one.
+
+Live onboarding is verified on Arch Linux ARM with Chromium 153.0.8010.36,
+cookie database 24 and existing v10 storage. macOS Brave was verified previously;
+the macOS Keychain adapter remains available. Linux Secret Service v11 storage is
+covered by fixtures, not a live credential-store check. Other Linux browser paths
+are implemented but unverified. Portal protection, native KWallet, Windows and
+headless pairing are not yet supported. Browser protections are never disabled.
+The normal request runtime uses the saved session without launching a browser.
 
 Then submit:
 

@@ -8,3 +8,5 @@
 .env.*
 deno.lock
 package-lock.json
+# The execution contract requires a byte-for-byte copy of the original handoff.
+docs/onboarding-handoff-2026-09-14.md

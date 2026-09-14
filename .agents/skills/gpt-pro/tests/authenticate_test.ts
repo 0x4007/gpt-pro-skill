@@ -1,6 +1,14 @@
-import { createCipheriv, createHash } from "node:crypto";
+import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { clientMetadata, decryptCookie, sessionFromCookies, updateCookies } from "../scripts/authenticate.ts";
+import {
+  authenticate,
+  clientMetadata,
+  decryptCookie,
+  decryptLinuxCookie,
+  linuxCookieHeader,
+  sessionFromCookies,
+  updateCookies,
+} from "../scripts/authenticate.ts";
 import { loadWebSession, parseWebSession } from "../scripts/ask-gpt-pro.ts";
 
 const cookie = "__Secure-next-auth.session-token=fixture-session; oai-did=fixture-device; __Secure-oai-is=ois1.fixture.AAAAAAAAAAAAAAAA.signature";
@@ -60,6 +68,33 @@ Deno.test("native cookie decryption validates encryption and domain binding", ()
   }
 });
 
+Deno.test("Linux native cookie reader accepts existing v10 and stops on protected or corrupt cookies", () => {
+  const key = pbkdf2Sync("peanuts", "saltysalt", 1, 16, "sha1");
+  const cipher = createCipheriv("aes-128-cbc", key, new Uint8Array(16).fill(32));
+  const encrypted = Buffer.concat([
+    Buffer.from("v10"),
+    cipher.update(Buffer.concat([createHash("sha256").update(".chatgpt.com").digest(), Buffer.from("PRIVATE_FIXTURE")])),
+    cipher.final(),
+  ]);
+  if (decryptLinuxCookie(encrypted, ".chatgpt.com", 24) !== "PRIVATE_FIXTURE") throw new Error("Linux cookie did not decrypt");
+  for (const [value, host, version] of [
+    [encrypted, ".example.com", 24],
+    [encrypted, ".chatgpt.com", 99],
+    [Buffer.from("v11PRIVATE_FIXTURE"), ".chatgpt.com", 24],
+    [Buffer.from("v20PRIVATE_FIXTURE"), ".chatgpt.com", 24],
+    [Buffer.from("v10PRIVATE_FIXTURE"), ".chatgpt.com", 24],
+  ] as const) {
+    let rejected = false;
+    try {
+      decryptLinuxCookie(value, host, version);
+    } catch (error) {
+      rejected = true;
+      if (String(error).includes("PRIVATE_FIXTURE")) throw new Error("Cookie leaked into error", { cause: error });
+    }
+    if (!rejected) throw new Error("Unsupported or corrupt cookie accepted");
+  }
+});
+
 Deno.test("cookie renewal removes expired chunks and preserves unrelated duplicate cookies", () => {
   const headers = new Headers();
   headers.append("set-cookie", "__Secure-next-auth.session-token.0=new; Secure; HttpOnly");
@@ -70,6 +105,49 @@ Deno.test("cookie renewal removes expired chunks and preserves unrelated duplica
     new Response(null, { headers })
   );
   if (result !== "scoped=one; scoped=two; __Secure-next-auth.session-token.0=new") throw new Error("Cookie rotation lost data or retained old chunks");
+});
+
+Deno.test("Linux protected cookies use one scoped secret and clear it after use", async () => {
+  const secret = new TextEncoder().encode("PRIVATE_STORE_SECRET");
+  const key = pbkdf2Sync(secret, "saltysalt", 1, 16, "sha1");
+  const cipher = createCipheriv("aes-128-cbc", key, new Uint8Array(16).fill(32));
+  const encrypted = Buffer.concat([
+    Buffer.from("v11"),
+    cipher.update(Buffer.concat([createHash("sha256").update(".chatgpt.com").digest(), Buffer.from("PRIVATE_SESSION")])),
+    cipher.final(),
+  ]);
+  let calls = 0;
+  const result = await linuxCookieHeader(
+    [
+      { name: "__Secure-next-auth.session-token", host: ".chatgpt.com", encrypted },
+      { name: "unrelated", host: ".chatgpt.com", encrypted: Buffer.from("v20PRIVATE_OTHER") },
+      { name: "oai-did", host: ".example.com", encrypted: Buffer.from("v20PRIVATE_OTHER") },
+    ],
+    24,
+    () => {
+      calls++;
+      return Promise.resolve(secret);
+    }
+  );
+  if (calls !== 1 || result !== "__Secure-next-auth.session-token=PRIVATE_SESSION" || secret.some((v) => v !== 0)) {
+    throw new Error("Cookie scope, secret lookup count, or memory cleanup failed");
+  }
+});
+
+Deno.test("Linux denied or unknown protection fails before exposing secrets", async () => {
+  for (const prefix of ["v11", "v20"]) {
+    let calls = 0;
+    let message = "";
+    try {
+      await linuxCookieHeader([{ name: "oai-did", host: ".chatgpt.com", encrypted: Buffer.from(prefix + "PRIVATE_COOKIE") }], 24, () => {
+        calls++;
+        return Promise.reject(new Error("PRIVATE_STORE_ERROR"));
+      });
+    } catch (error) {
+      message = String(error);
+    }
+    if (!message || message.includes("PRIVATE") || calls !== (prefix === "v11" ? 1 : 0)) throw new Error("Unsafe credential-store failure");
+  }
 });
 
 Deno.test("fresh bootstrap uses only first-party HTTP and real page metadata", async () => {
@@ -109,6 +187,27 @@ Deno.test("renewal rejects account changes and throttling without retries", asyn
     if (!rejected || calls !== 1) {
       throw new Error("Failed renewal was accepted or retried");
     }
+  }
+});
+
+Deno.test("authentication rejection identifies a browser challenge without leaking the body or retrying", async () => {
+  let calls = 0;
+  let message = "";
+  try {
+    await sessionFromCookies(cookie, "fixture-agent", undefined, () => {
+      calls++;
+      return Promise.resolve(
+        new Response("PRIVATE_FIXTURE", {
+          status: 403,
+          headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+        })
+      );
+    });
+  } catch (error) {
+    message = String(error);
+  }
+  if (calls !== 1 || !message.includes("/api/auth/session") || !message.includes("browser verification required") || message.includes("PRIVATE_FIXTURE")) {
+    throw new Error("Authentication failure was retried, leaked secrets, or lost its diagnostic classification");
   }
 });
 
@@ -181,6 +280,60 @@ Deno.test("failed expired-session renewal preserves the previous file", async ()
     }
   } finally {
     globalThis.fetch = original;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("onboarding reuses valid saved state without browser discovery or rewriting credentials", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.chmod(dir, 0o700);
+  const directory = pathToFileURL(dir + "/");
+  const path = new URL(".env", directory);
+  const before = encode(fixture());
+  await Deno.writeTextFile(path, before, { mode: 0o600 });
+  const fetcher = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (input) => {
+    requests.push(String(input instanceof Request ? input.url : input));
+    return Promise.resolve(new Response("{}"));
+  };
+  try {
+    // No HOME or subprocess permission is granted to these tests. Discovery
+    // would fail, so success proves saved-state onboarding avoided the browser.
+    await authenticate(directory);
+    if (requests.join(" ") !== "https://chatgpt.com/backend-api/models" || (await Deno.readTextFile(path)) !== before) {
+      throw new Error("Saved onboarding changed state or made unexpected requests");
+    }
+  } finally {
+    globalThis.fetch = fetcher;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("noninteractive onboarding stops on rejected saved authentication without replacement", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.chmod(dir, 0o700);
+  const directory = pathToFileURL(dir + "/");
+  const path = new URL(".env", directory);
+  const before = encode(fixture());
+  await Deno.writeTextFile(path, before, { mode: 0o600 });
+  const fetcher = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = () => {
+    calls++;
+    return Promise.resolve(new Response("PRIVATE_FIXTURE", { status: 401 }));
+  };
+  try {
+    let rejected = false;
+    try {
+      await authenticate(directory);
+    } catch (error) {
+      rejected = true;
+      if (String(error).includes("PRIVATE_FIXTURE")) throw new Error("Server body leaked", { cause: error });
+    }
+    if (!rejected || calls !== 1 || (await Deno.readTextFile(path)) !== before) throw new Error("Rejected onboarding changed or retried credentials");
+  } finally {
+    globalThis.fetch = fetcher;
     await Deno.remove(dir, { recursive: true });
   }
 });
