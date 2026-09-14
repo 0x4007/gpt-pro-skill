@@ -1,5 +1,6 @@
 import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import {
   authenticate,
   clientMetadata,
@@ -13,6 +14,80 @@ import { loadWebSession, parseWebSession } from "../scripts/ask-gpt-pro.ts";
 
 const cookie = "__Secure-next-auth.session-token=fixture-session; oai-did=fixture-device; __Secure-oai-is=ois1.fixture.AAAAAAAAAAAAAAAA.signature";
 const html = '<html lang="en-US" data-build="prod-abcdef1234" data-seq="12345">';
+
+Deno.test("real browser databases require profile selection and cancellation leaves all state untouched", async () => {
+  if (Deno.build.os !== "linux") return;
+  const home = await Deno.makeTempDir();
+  const directory = pathToFileURL(home + "/state/");
+  const databases: string[] = [];
+  for (const profile of ["Default", "Profile 1"]) {
+    const root = home + "/.config/chromium/" + profile;
+    await Deno.mkdir(root, { recursive: true });
+    const path = root + "/Cookies";
+    const db = new DatabaseSync(path);
+    try {
+      db.exec(
+        "CREATE TABLE cookies (host_key TEXT, name TEXT, path TEXT, top_frame_site_key TEXT, is_persistent INTEGER, expires_utc INTEGER, encrypted_value BLOB)"
+      );
+      db.prepare("INSERT INTO cookies VALUES (?, ?, '/', '', 0, 0, ?)").run(
+        ".chatgpt.com",
+        "__Secure-next-auth.session-token",
+        new TextEncoder().encode("PRIVATE_FIXTURE")
+      );
+    } finally {
+      db.close();
+    }
+    databases.push(path);
+  }
+  const before = await Promise.all(databases.map((path) => Deno.readFile(path)));
+  const get = Deno.env.get.bind(Deno.env);
+  const terminal = Deno.stdin.isTerminal.bind(Deno.stdin);
+  const ask = globalThis.prompt;
+  const log = console.error;
+  const messages: string[] = [];
+  Deno.env.get = (name) => (name === "HOME" ? home : get(name));
+  console.error = (...values: unknown[]) => {
+    messages.push(values.join(" "));
+  };
+  try {
+    for (const interactive of [false, true]) {
+      Deno.stdin.isTerminal = () => interactive;
+      let prompts = 0;
+      globalThis.prompt = () => {
+        prompts++;
+        return null;
+      };
+      let error = "";
+      try {
+        await authenticate(directory);
+      } catch (caught) {
+        error = String(caught);
+      }
+      const expected = interactive ? "Select one profile explicitly" : "Profile selection is needed";
+      if (!error.includes(expected) || prompts !== Number(interactive)) throw new Error("Profile selection did not stop safely");
+    }
+    if (
+      !messages.some((value) => value.includes("Chromium / Default")) ||
+      !messages.some((value) => value.includes("Chromium / Profile 1")) ||
+      messages.join(" ").includes("PRIVATE_FIXTURE")
+    ) {
+      throw new Error("Candidate labels are missing or contain credentials");
+    }
+    for (let index = 0; index < databases.length; index++) {
+      const after = await Deno.readFile(databases[index]);
+      if (!Buffer.from(after).equals(before[index])) throw new Error("Discovery changed browser storage");
+    }
+    const entries = await Array.fromAsync(Deno.readDir(home));
+    if (entries.some((entry) => entry.name === "state")) throw new Error("Cancelled onboarding created private state");
+  } finally {
+    Deno.env.get = get;
+    Deno.stdin.isTerminal = terminal;
+    globalThis.prompt = ask;
+    console.error = log;
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
 function token(sub = "fixture-account", exp = 4102444800): string {
   return `e30.${btoa(JSON.stringify({ sub, exp }))}.fixture`;
 }

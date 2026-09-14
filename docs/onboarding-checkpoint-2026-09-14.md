@@ -1,5 +1,39 @@
 # Onboarding implementation checkpoint
 
+## Current continuation, 07:36 UTC
+
+This section supersedes historical delivery and lane-state statements below.
+Canonical branch and worktree still match the handoff. Implementation commit
+`67d64eec067d3589b2d63dcb41807a4fa60898b5` is pushed in draft PR
+<https://github.com/0x4007/gpt-pro-skill/pull/13>. No required GitHub checks are
+reported. The existing local review found no actionable findings.
+
+Added real SQLite discovery acceptance: two eligible profiles require explicit
+selection, noninteractive execution stops, interactive cancellation creates no
+private state, candidate output contains labels only, and both browser databases
+remain byte-identical. No new runtime interface or permission was added.
+All 47 tests and the full repository gate passed after correcting test-only lint
+findings. Executed on this Arch Linux ARM VPS in the canonical worktree, against
+the commit above plus the test delta, receipt:
+`6f5a776a3d6eb919488c2486d5242b714d8cd85724fc97bb66b10cbe7b99df1f/bc619224-e3bb-4f33-9658-f81525f58089`.
+The preceding failed gate is retained as
+`6f5a776a3d6eb919488c2486d5242b714d8cd85724fc97bb66b10cbe7b99df1f/8ffe6dc3-f0c3-4759-a61e-4c8d6096c1a0`.
+
+Read the prior installed auth receipt: authenticated=true, HTTP 200, no model
+submission. No live authentication request was repeated. The second account is
+working with the current installed helper. At 07:35 an unrelated active installed
+helper (PID 1834755) was retrieving job 29dc3c4f-5143-4469-9ae7-192c5c689de5.
+Do not stop it or overwrite the installed source while it is active. Recheck its
+identity before installation; these PIDs are observations, not durable handles.
+Installed files differ substantially from the repository and need a full backup
+and coherent accepted-artifact update after active helpers exit.
+
+Remaining blockers: no Windows test host or selected protected-browser alternative,
+no approved headless pairing design, and installed update waits for the active
+helper and accepted delivery artifact. Keep PR draft until the required platform
+acceptance or an explicit scope change resolves the handoff. The broader goal
+remains incomplete; the VPS authentication repair itself has live evidence.
+
 ## Current delivery state, 07:29 UTC
 
 The canonical implementation now includes Linux v10 and scoped Secret Service
