@@ -70,8 +70,12 @@ async function authFetch(path: string, cookie: string, userAgent: string, fetche
     throw new AuthenticationError("ChatGPT authentication request failed or timed out; no credentials were changed");
   }
   if (!response.ok) {
+    const isChallenge = response.headers.get("cf-mitigated") === "challenge";
+    const isHtml = response.headers.get("content-type")?.startsWith("text/html") === true;
     await response.body?.cancel();
-    throw new AuthenticationError(`ChatGPT authentication returned HTTP ${String(response.status)}; no automatic retry`);
+    let detail = isHtml ? " (HTML response before session JSON)" : "";
+    if (isChallenge) detail = " (browser verification required)";
+    throw new AuthenticationError(`ChatGPT authentication at ${path} returned HTTP ${String(response.status)}${detail}; no automatic retry`);
   }
   return response;
 }
@@ -176,6 +180,11 @@ export async function renewWebSession(directory: URL): Promise<WebSession> {
 }
 
 async function verifyAndSave(session: WebSession, directory: URL): Promise<void> {
+  await verifySession(session);
+  await importWebSession(JSON.stringify(session), directory);
+}
+
+async function verifySession(session: WebSession): Promise<void> {
   const client = new ChatSession(session);
   const response = await client.fetch(ORIGIN + "/backend-api/models", {
     signal: AbortSignal.timeout(20000),
@@ -185,7 +194,6 @@ async function verifyAndSave(session: WebSession, directory: URL): Promise<void>
     throw new AuthenticationError(`ChatGPT authentication check returned HTTP ${String(response.status)}; existing authentication was preserved`);
   }
   session.cookie = client.cookies.header();
-  await importWebSession(JSON.stringify(session), directory);
 }
 
 interface BrowserProfile {
@@ -194,13 +202,14 @@ interface BrowserProfile {
   database: string;
   service: string;
   application: string;
+  platform: "darwin" | "linux";
 }
 
-export function decryptCookie(encrypted: Uint8Array, host: string, key: Uint8Array, version: number): string {
+export function decryptCookie(encrypted: Uint8Array, host: string, key: Uint8Array, version: number, protection = "v10"): string {
   if (version !== 23 && version !== 24) {
     throw new AuthenticationError("Unsupported Chromium cookie database version");
   }
-  if (new TextDecoder().decode(encrypted.subarray(0, 3)) !== "v10") {
+  if (new TextDecoder().decode(encrypted.subarray(0, 3)) !== protection) {
     throw new AuthenticationError("Unsupported cookie protection; no protection bypass is attempted");
   }
   try {
@@ -224,6 +233,13 @@ const BROWSER_PRODUCTS: readonly BrowserProduct[] = [
   ["Chrome", "Google/Chrome", "Chrome Safe Storage", "Google Chrome.app"],
   ["Chromium", "Chromium", "Chromium Safe Storage", "Chromium.app"],
   ["Edge", "Microsoft Edge", "Microsoft Edge Safe Storage", "Microsoft Edge.app"],
+];
+
+const LINUX_BROWSER_PRODUCTS: readonly BrowserProduct[] = [
+  ["Brave", "BraveSoftware/Brave-Browser", "brave", "/usr/bin/brave-browser"],
+  ["Chrome", "google-chrome", "chrome", "/usr/bin/google-chrome"],
+  ["Chromium", "chromium", "chromium", "/usr/bin/chromium"],
+  ["Edge", "microsoft-edge", "microsoft-edge", "/usr/bin/microsoft-edge"],
 ];
 
 const SESSION_COOKIE_QUERY =
@@ -254,17 +270,24 @@ async function profileCookieStore(root: string, profile: string): Promise<Profil
   for (const suffix of ["Cookies", "Network/Cookies"]) {
     const database = join(root, profile, suffix);
     try {
-      return { database, signedIn: await databaseHasSession(database) };
+      const info = await Deno.lstat(database);
+      if (!info.isFile || info.isSymlink) throw new AuthenticationError("Browser cookie storage must be a regular file");
     } catch (error) {
-      if (error instanceof Deno.errors.PermissionDenied) throw error;
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+    try {
+      return { database, signedIn: await databaseHasSession(database) };
+    } catch {
+      throw new AuthenticationError("Browser cookie storage is locked, unreadable, or unsupported; close the browser and try again");
     }
   }
   return undefined;
 }
 
-async function browserProfiles(home: string, product: BrowserProduct): Promise<BrowserProfile[]> {
+async function browserProfiles(root: string, product: BrowserProduct, platform: "darwin" | "linux"): Promise<BrowserProfile[]> {
   const [browser, folder, service, application] = product;
-  const root = join(home, "Library/Application Support", folder);
+  root = join(root, folder);
   const found: BrowserProfile[] = [];
   try {
     for await (const entry of Deno.readDir(root)) {
@@ -275,7 +298,7 @@ async function browserProfiles(home: string, product: BrowserProduct): Promise<B
       if (!store?.signedIn) {
         continue;
       }
-      found.push({ browser, profile: entry.name, database: store.database, service, application });
+      found.push({ browser, profile: entry.name, database: store.database, service, application, platform });
     }
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
@@ -284,21 +307,109 @@ async function browserProfiles(home: string, product: BrowserProduct): Promise<B
 }
 
 async function candidates(): Promise<BrowserProfile[]> {
-  if (Deno.build.os !== "darwin") {
-    throw new AuthenticationError("Automatic browser sign-in currently supports macOS Brave, Chrome, Chromium, and Edge; no browser credentials were read");
+  const platform = Deno.build.os;
+  if (platform !== "darwin" && platform !== "linux") {
+    throw new AuthenticationError("No verified local credential adapter for this browser platform; no browser protections were changed");
   }
   const home = Deno.env.get("HOME");
   if (!home) {
     throw new AuthenticationError("HOME is required for local browser sign-in");
   }
   const found: BrowserProfile[] = [];
-  for (const product of BROWSER_PRODUCTS) {
-    found.push(...(await browserProfiles(home, product)));
+  const products = platform === "darwin" ? BROWSER_PRODUCTS : LINUX_BROWSER_PRODUCTS;
+  const root = join(home, platform === "darwin" ? "Library/Application Support" : ".config");
+  for (const product of products) {
+    found.push(...(await browserProfiles(root, product, platform)));
+  }
+  if (platform === "linux") {
+    found.push(
+      ...(await browserProfiles(join(home, ".local/share"), ["Chromium sign-in", "gpt-pro-browser-login", "chromium", "/usr/bin/chromium"], platform))
+    );
   }
   return found;
 }
 
-async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
+/** Read existing Linux v10/v11 storage; never request a browser protection change. */
+export function decryptLinuxCookie(encrypted: Uint8Array, host: string, version: number, secret?: Uint8Array): string {
+  const protection = new TextDecoder().decode(encrypted.subarray(0, 3));
+  if (protection !== "v10" && protection !== "v11") {
+    throw new AuthenticationError("This browser cookie needs an OS credential-store adapter; no protection bypass or downgrade was attempted");
+  }
+  if (protection === "v11" && !secret?.length) {
+    throw new AuthenticationError("Browser credential store is unavailable or locked; unlock it through the desktop and run authenticate.ts again");
+  }
+  const key = pbkdf2Sync(protection === "v10" ? "peanuts" : (secret ?? new Uint8Array()), "saltysalt", 1, 16, "sha1");
+  try {
+    return decryptCookie(encrypted, host, key, version, protection);
+  } finally {
+    key.fill(0);
+  }
+}
+
+interface NativeCookie {
+  name: string;
+  host: string;
+  encrypted: Uint8Array;
+}
+
+export async function linuxCookieHeader(rows: NativeCookie[], version: number, readSecret: () => Promise<Uint8Array>): Promise<string> {
+  const allowed = rows.filter((row) => NATIVE_COOKIES.test(row.name) && (row.host === "chatgpt.com" || row.host === ".chatgpt.com"));
+  if (version !== 23 && version !== 24) throw new AuthenticationError("Unsupported Chromium cookie database version");
+  const protections = allowed.map((row) => new TextDecoder().decode(row.encrypted.subarray(0, 3)));
+  if (protections.some((value) => value !== "v10" && value !== "v11")) {
+    throw new AuthenticationError("Unsupported cookie protection; no credential store was accessed");
+  }
+  let secret: Uint8Array | undefined;
+  try {
+    if (protections.includes("v11")) {
+      try {
+        secret = await readSecret();
+      } catch {
+        throw new AuthenticationError("Browser credential access was denied, unavailable, or timed out; no credentials were saved");
+      }
+      if (!secret.length) throw new AuthenticationError("No browser secret was returned; unlock the desktop credential store and try again");
+    }
+    return allowed.map((row) => row.name + "=" + decryptLinuxCookie(row.encrypted, row.host, version, secret)).join("; ");
+  } finally {
+    secret?.fill(0);
+  }
+}
+
+async function linuxSecret(application: string): Promise<Uint8Array> {
+  const output = await new Deno.Command("/usr/bin/secret-tool", {
+    args: ["lookup", "application", application],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+    signal: AbortSignal.timeout(60000),
+  }).output();
+  try {
+    if (!output.success) throw new AuthenticationError("Browser credential access was denied or unavailable");
+    let end = output.stdout.length;
+    if (output.stdout[end - 1] === 10) end--;
+    if (output.stdout[end - 1] === 13) end--;
+    return output.stdout.slice(0, end);
+  } finally {
+    output.stdout.fill(0);
+  }
+}
+
+async function sessionFromBrowser(cookie: string, userAgent: string, previous?: WebSession): Promise<WebSession> {
+  function signIn(header: string): string {
+    return header
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter((entry) => SESSION_COOKIE.test(entry.split("=", 1)[0]))
+      .sort((a, b) => a.localeCompare(b))
+      .join("; ");
+  }
+  if (previous && signIn(previous.cookie) === signIn(cookie)) {
+    throw new AuthenticationError("The browser sign-in has not changed; sign in again before reconnecting. No authentication request was repeated");
+  }
+  return await sessionFromCookies(cookie, userAgent, previous);
+}
+
+async function nativeSession(profile: BrowserProfile, previous?: WebSession): Promise<WebSession> {
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(profile.database, { readOnly: true });
   let rows;
@@ -312,6 +423,32 @@ async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
       .all(chromiumNow());
   } finally {
     db.close();
+  }
+  if (profile.platform === "linux") {
+    const output = await new Deno.Command(profile.application, {
+      args: ["--version"],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "null",
+      signal: AbortSignal.timeout(10000),
+    }).output();
+    const major = /\b(\d+)\.\d+\.\d+/.exec(new TextDecoder().decode(output.stdout))?.[1];
+    if (!output.success || !major) throw new AuthenticationError("Could not read the installed browser version");
+    const cookie = await linuxCookieHeader(
+      rows.map((row) => ({
+        name: String(row.name),
+        host: String(row.host_key),
+        encrypted: row.encrypted_value as Uint8Array,
+      })),
+      version,
+      () => linuxSecret(profile.service)
+    );
+    const machine = Deno.build.arch === "aarch64" ? "aarch64" : "x86_64";
+    return await sessionFromBrowser(
+      cookie,
+      `Mozilla/5.0 (X11; Linux ${machine}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`,
+      previous
+    );
   }
   const plist = await Deno.readTextFile(join("/Applications", profile.application, "Contents/Info.plist"));
   const major = /<key>CFBundleShortVersionString<\/key>\s*<string>(\d+)\./.exec(plist)?.[1];
@@ -348,10 +485,43 @@ async function nativeSession(profile: BrowserProfile): Promise<WebSession> {
     key.fill(0);
   }
   const userAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
-  return await sessionFromCookies(cookie, userAgent);
+  return await sessionFromBrowser(cookie, userAgent, previous);
 }
 
-async function authenticate(directory: URL): Promise<void> {
+async function readSavedSession(directory: URL): Promise<WebSession | undefined> {
+  const path = new URL(".env", directory);
+  try {
+    const stat = await Deno.lstat(path);
+    if (!stat.isFile || stat.isSymlink || (stat.mode !== null && (stat.mode & 0o077) !== 0)) {
+      throw new AuthenticationError("Saved authentication must be an owner-only regular file");
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return undefined;
+  }
+  return parseWebSession(await Deno.readTextFile(path), true);
+}
+
+async function connectSavedSession(previous: WebSession, directory: URL): Promise<boolean> {
+  try {
+    if (tokenExpiry(previous.accessToken) <= Date.now() + 300000) {
+      await renewWebSession(directory);
+    } else {
+      await verifySession(previous);
+    }
+    console.log(JSON.stringify({ authenticated: true, source: "saved_session", modelSubmission: false, submissionEligibility: "not_tested" }));
+    return true;
+  } catch (error) {
+    if (!Deno.stdin.isTerminal()) throw error;
+    console.error(failureMessage(error));
+    if (prompt("Have you signed in again? Reconnect the same account from a changed browser login (yes/no)") !== "yes") throw error;
+    return false;
+  }
+}
+
+export async function authenticate(directory: URL): Promise<void> {
+  const previous = await readSavedSession(directory);
+  if (previous && (await connectSavedSession(previous, directory))) return;
   const profiles = await candidates();
   if (!profiles.length) {
     throw new AuthenticationError(
@@ -363,6 +533,9 @@ async function authenticate(directory: URL): Promise<void> {
     profiles.forEach((profile, index) => {
       console.error(`${String(index + 1)}. ${profile.browser} / ${profile.profile}`);
     });
+    if (!Deno.stdin.isTerminal()) {
+      throw new AuthenticationError("Profile selection is needed; run authenticate.ts in an interactive terminal and select your browser profile");
+    }
     const choice = prompt("Choose the browser profile to authorize (number)");
     const index = Number(choice) - 1;
     if (!choice || !Number.isInteger(index) || !profiles[index]) {
@@ -370,14 +543,22 @@ async function authenticate(directory: URL): Promise<void> {
     }
     selected = profiles[index];
   }
-  const session = await nativeSession(selected);
+  const session = await nativeSession(selected, previous);
   await withAuthLock(directory, async () => {
+    try {
+      const current = parseWebSession(await Deno.readTextFile(new URL(".env", directory)), true);
+      if (subject(current.accessToken) !== subject(session.accessToken)) {
+        throw new AuthenticationError("The selected browser account differs from saved authentication; existing credentials and jobs were preserved");
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
     await verifyAndSave(session, directory);
   });
   console.log(
     JSON.stringify({
       authenticated: true,
-      source: "local_browser_keychain",
+      source: selected.platform === "darwin" ? "local_browser_keychain" : "local_browser",
       browser: selected.browser,
       profile: selected.profile,
       modelSubmission: false,
@@ -388,7 +569,7 @@ async function authenticate(directory: URL): Promise<void> {
 
 function failureMessage(error: unknown): string {
   if (error instanceof Error && error.message.startsWith("Requires")) {
-    return "Authentication needs local read, Keychain execution, and chatgpt.com network permissions";
+    return "Authentication needs local read/write, the selected browser or credential helper execution, and chatgpt.com network permissions";
   }
   const reason = error instanceof AuthenticationError ? error.message : "local setup failed; existing authentication was preserved";
   return "Authentication failed: " + reason;
