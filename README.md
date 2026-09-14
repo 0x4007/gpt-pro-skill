@@ -38,7 +38,8 @@ cookie database 24 and existing v10 storage. macOS Brave was verified previously
 the macOS Keychain adapter remains available. Linux Secret Service v11 storage is
 covered by fixtures, not a live credential-store check. Other Linux browser paths
 are implemented but unverified. Portal protection, native KWallet, Windows and
-headless pairing are not yet supported. Browser protections are never disabled.
+headless pairing are not yet supported. Windows development and verification are
+deferred. Browser protections are never disabled.
 The normal request runtime uses the saved session without launching a browser.
 
 Then submit:

@@ -1,5 +1,20 @@
 # Onboarding implementation checkpoint
 
+## Owner scope decision, 07:39 UTC
+
+The owner stated: "I have no windows computer so defer support and development."
+Windows implementation and live acceptance are now explicitly deferred for this
+delivery, superseding the earlier Windows blocker. The single global decisions
+log records this durable change. No Firefox adapter or Windows ACL mutation will
+be implemented under the current scope.
+
+Proceed with delivery of the verified local macOS/Linux onboarding changes and
+accurate support limits. Headless pairing has not been approved or implemented;
+report that acceptance item as unavailable, as required by the original matrix.
+Do not transfer credentials. The installed helper still has an active unrelated
+retrieval; preserve it and update only after it exits. The original handoff copy
+remains unchanged, with this checkpoint recording the owner's scope correction.
+
 ## Windows capability investigation, 07:38 UTC
 
 The previous turn made progress: committed real profile-cancellation acceptance

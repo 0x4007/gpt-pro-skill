@@ -65,7 +65,8 @@ Live support: Arch Linux ARM, Chromium 153.0.8010.36, database 24, existing v10
 cookies; macOS Brave was verified previously. Linux v11 through Secret Service
 has fixture coverage only. Other Chromium-family browser paths are unverified.
 Windows, portal-protected storage, native KWallet, and headless pairing remain
-unfinished. Do not claim universal compatibility or reject Linux solely by OS.
+unfinished. Windows development and verification are explicitly deferred.
+Do not claim universal compatibility or reject Linux solely by OS.
 
 A job is retrievable for six hours after submission. Generation continues on the
 server, so run waiting commands in the background and keep their handle.
