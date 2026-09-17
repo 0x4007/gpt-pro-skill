@@ -6,14 +6,24 @@ instructions for agents _using_ the skill live in
 
 ## Where guidance belongs
 
-- `SKILL.md` holds how to operate the skill: commands, retrieval cadence,
-  failure handling. It loads only once an agent invokes the skill.
-- Authorization rules — use only on an explicit request, one request authorizes
-  one submission, never resubmit after a timeout — stay in the consuming
-  agent's global rules, because they must be visible _before_ the skill loads
-  and cannot gate their own invocation.
-- Do not restate authorization here to "keep it together". Duplicating a rule
-  across both places is how they drift apart.
+Everything about this skill's own use lives in the skill:
+
+- The `description` frontmatter is the routing gate. It is the only text an
+  agent sees before loading, so it carries the trigger and the cost warning.
+  Writing it loosely is how the skill starts running unasked.
+- `SKILL.md` holds authorization, budget, commands, retrieval cadence, and
+  failure handling.
+
+Do not restate any of that in a consuming agent's global rules. Globals should
+not mention this skill at all, for two reasons: a duplicate drifts from the
+original, and a global that describes the skill can make it sound available
+without an explicit request, which is the expensive failure we are avoiding.
+
+The only global rules that legitimately reference it are boundary guards owned
+by another capability — for example, that this skill is never a fallback for a
+blocked worker, and never a silent substitute for a requested tool. Those exist
+to stop substitution, not to advertise the skill, and they belong to the
+capability enforcing them.
 
 ## The install must stay a symlink
 

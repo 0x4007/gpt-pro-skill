@@ -1,13 +1,40 @@
 ---
 name: gpt-pro
-description: Use only when the user explicitly requests GPT Pro or invokes $gpt-pro; retrieve durable gpt-6-pro research jobs without resubmitting.
+description: Deep research and hard cognition via gpt-6-pro. Never run automatically, it is expensive; use only when the user explicitly requests GPT Pro or invokes $gpt-pro. Retrieves durable jobs without resubmitting.
 ---
 
-Use this skill only when the user explicitly asks for GPT Pro or types
-`$gpt-pro`. Research, planning, reviews, and blocked work do not authorize a
-submission. One explicit request authorizes one submission unless the user
-states a larger budget. Check saved jobs and reuse completed answers first.
-Never resubmit a prompt because a wait or process timed out.
+Reach for this skill for deep research and hard cognition: questions needing
+sustained reasoning, synthesis across many sources, or a second opinion on a
+decision that is expensive to get wrong. Ordinary lookups, routine legwork, and
+answers that local code or primary documentation already settle are not worth a
+submission; do that work directly.
+
+Submission is expensive, so it never happens on the agent's own initiative. Use
+this skill only when the user explicitly asks for GPT Pro or types `$gpt-pro`.
+Research, planning, reviews, and blocked work do not authorize a submission. One
+explicit request authorizes one submission unless the user states a larger
+budget. Combine related questions into one prompt. A follow-up needs a fresh
+request or unused batch allowance. Recurring use needs an explicit maximum call
+count and end time; clarify old unbounded instructions before another
+submission. Do not submit a new review while a previous one is pending or before
+using its advice. Honor an explicit tool choice, and never invoke Perplexity or
+another provider under these rules.
+
+When no request names this skill, do not silently substitute a cheaper answer
+for work that genuinely needs it. Say what the deeper option would add and let
+the user decide.
+
+Record the authorizing request, the budget it spent, and the job ID in existing
+task state. Plans, handoffs, children, and continuations cannot create or expand
+authority, and debugging or mentioning the skill does not authorize a live model
+test. Never include secrets or unrelated private context in a prompt. Check
+saved jobs and reuse completed answers first, and never resubmit a prompt
+because a wait or process timed out.
+
+This is a ChatGPT conversation workflow, not ChatGPT's separate Deep Research
+product mode. It has independent authentication and job state. If ordinary
+research is blocked, report the exact blocker and stop that work rather than
+treating a submission as a fallback.
 
 Set `SKILL_DIR` to this skill's installed folder.
 
@@ -66,7 +93,11 @@ cookies; macOS Brave was verified previously. Linux v11 through Secret Service
 has fixture coverage only. Other Chromium-family browser paths are unverified.
 Windows, portal-protected storage, native KWallet, and headless pairing remain
 unfinished. Windows development and verification are explicitly deferred.
-Do not claim universal compatibility or reject Linux solely by OS.
+Do not claim universal compatibility or reject Linux solely by OS. On the
+Windows-deferred Guacamole/XFCE desktop, Chromium is the Web Browser and
+HTTP/HTTPS default using `/home/codex/.local/share/gpt-pro-browser-login`; keep
+the locked original profile intact. This is a maintainer environment note and
+does not authorize cross-host credential or session transfer.
 
 A job is retrievable for six hours after submission. Generation continues on the
 server, so run waiting commands in the background and keep their handle.
@@ -83,6 +114,12 @@ the answer arrives as a completion event instead of blocking a turn; a
 foregrounded call hides a 429 or a failed login until it returns. `--watch`
 waits on every pending job rather than a chosen one, so prefer
 `--result <job-id>` whenever more than one job is outstanding.
+
+Keep one retrieval owner per job, keep one pending job by default, and resume
+the same job after an interrupted wait rather than resubmitting. On HTTP 429,
+honor the saved cooldown and Retry-After and check locally with `--status`. Do
+not replace the prompt, probe live repeatedly, or infer a safe rate from a
+weekly ChatGPT allowance.
 
 Manual timing is a fallback for when no retrieval owner is running or a
 backgrounded one may have died. As measured on 2026-09-17, completed jobs ran a
