@@ -57,6 +57,7 @@ deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=cha
 | `--watch`                 | Retrieve the pending jobs as JSON lines       |
 | `--jobs`                  | List local job summaries as JSON              |
 | `--status <job-id>`       | Inspect one job without polling               |
+| `--timings`               | Local duration stats; no network, no model    |
 | `--auth-check`            | Read-only authentication check; no model turn |
 | `--auth-import <file\|->` | Import a session into private state           |
 | `--help`                  | Print CLI usage                               |

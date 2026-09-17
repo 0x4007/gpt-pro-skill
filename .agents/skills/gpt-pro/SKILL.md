@@ -73,3 +73,34 @@ server, so run waiting commands in the background and keep their handle.
 Retrieval never submits the prompt again. Completed results are cached and can
 be reread without network access. Local tests:
 `deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
+
+## Retrieval cadence
+
+`--result` and `--watch` are long polls, not single checks. They take the
+per-job lock, poll internally (every 5 s for the first six attempts, then every
+30 s), and return as soon as the answer exists. Run them in the background so
+the answer arrives as a completion event instead of blocking a turn; a
+foregrounded call hides a 429 or a failed login until it returns. `--watch`
+waits on every pending job rather than a chosen one, so prefer
+`--result <job-id>` whenever more than one job is outstanding.
+
+Manual timing is a fallback for when no retrieval owner is running or a
+backgrounded one may have died. As measured on 2026-09-17, completed jobs ran a
+median 15.6 min, p90 19.5 min, max 20.2 min, with the spread close to flat, so
+roughly half are still running at the median. A first check near 12 min catches
+the fast third; then check every 60 s. Check with `--status`, which is a local
+file read using no network; never point the check-in schedule at `--result`,
+which retrieves over the network on each poll. Past about 22 min, suspect an
+authentication or retrieval fault rather than slowness, because a working long
+poll and a wedged one look identical. Those figures describe one account and
+machine; re-measure locally rather than treating them as universal.
+
+Run `--timings` to re-measure from saved job records. It reads local state only
+and spends no submission or model turn. It reports the sample it used and flags
+completed jobs that exceeded an hour, which means retrieval was abandoned rather
+than generation was slow. Durations span submission to recorded answer, so they
+approximate the wait a caller experiences, not server generation time. Early
+records predate the current upload path and should be excluded with
+`--since YYYY-MM-DD` before comparing. The six-hour figure noted above is how
+long a job stays retrievable, not how long it generates, so a result appearing
+hours later is an abandoned retrieval rather than a slow model.

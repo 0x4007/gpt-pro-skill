@@ -46,7 +46,123 @@ function jobSummary(job: ProJob) {
 }
 
 const HELP_TEXT =
-  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.";
+  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
+
+const MINUTE_MS = 60_000;
+
+/**
+ * Duration ranges in minutes for the histogram. Fixed ranges keep resolution where the
+ * real generations sit instead of spreading one sample per minute over empty buckets.
+ * A null upper bound is the open-ended tail.
+ */
+const TIMING_RANGES: [number, number | null][] = [
+  [0, 5],
+  [5, 10],
+  [10, 15],
+  [15, 20],
+  [20, null],
+];
+
+/** Durations beyond this are treated as abandoned retrieval rather than slow generation. */
+const TIMING_STALE_MS = 60 * MINUTE_MS;
+
+/** Effective sample floor before a distribution is worth quoting. */
+const TIMING_MIN_SAMPLE = 5;
+
+function percentile(sorted: number[], fraction: number): number {
+  const index = (sorted.length - 1) * fraction;
+  const low = Math.floor(index);
+  const high = Math.min(low + 1, sorted.length - 1);
+  return sorted[low] + (sorted[high] - sorted[low]) * (index - low);
+}
+
+/** Reads the optional --since cutoff, rejecting anything that is not a plain date. */
+function parseSinceOption(args: string[]): string | undefined {
+  let since: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] !== "--since") throw new Error("Unknown --timings option: " + args[index]);
+    since = args[++index];
+    if (!since || !/^\d{4}-\d{2}-\d{2}$/.test(since)) throw new Error("--since requires a YYYY-MM-DD date");
+  }
+  return since;
+}
+
+interface DurationSet {
+  durations: number[];
+  statuses: Record<string, number>;
+  undated: number;
+}
+
+/** Collects submission-to-answer spans, sorting them for percentile reads. */
+function collectDurations(jobs: ProJob[]): DurationSet {
+  const durations: number[] = [];
+  const statuses: Record<string, number> = {};
+  let undated = 0;
+  for (const job of jobs) {
+    statuses[job.status] = (statuses[job.status] ?? 0) + 1;
+    if (job.status !== "completed") continue;
+    const start = Date.parse(job.createdAt);
+    const end = Date.parse(job.lastPollAt ?? job.updatedAt);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+      undated++;
+      continue;
+    }
+    durations.push(end - start);
+  }
+  durations.sort((left, right) => left - right);
+  return { durations, statuses, undated };
+}
+
+/** Converts a millisecond span to whole minutes, rounded for stable reporting. */
+function measureMinutes(value: number): number {
+  return Number((value / MINUTE_MS).toFixed(1));
+}
+
+/**
+ * Summarises how long completed jobs actually took, read entirely from local records.
+ * The measured span is submission to recorded answer, so it approximates the wait a
+ * caller experiences rather than the server's own generation time.
+ */
+async function timingsCommand(args: string[], store: JobStore): Promise<void> {
+  const since = parseSinceOption(args);
+  const jobs = (await store.list()).filter((job) => !since || job.createdAt >= since);
+  const { durations, statuses, undated } = collectDurations(jobs);
+  const stale = durations.filter((duration) => duration > TIMING_STALE_MS).length;
+  console.log(
+    JSON.stringify(
+      {
+        scope: since ? "jobs created on or after " + since : "all saved jobs",
+        jobs: jobs.length,
+        statuses,
+        completedWithoutDuration: undated,
+        sample: durations.length,
+        sampleNote:
+          "Submission to recorded answer. Not server generation time; early runs used an older upload path and some records reflect abandoned retrieval.",
+        confidence: durations.length < TIMING_MIN_SAMPLE ? "insufficient" : "indicative",
+        minutes: {
+          min: durations.length ? measureMinutes(durations[0]) : null,
+          p25: durations.length ? measureMinutes(percentile(durations, 0.25)) : null,
+          median: durations.length ? measureMinutes(percentile(durations, 0.5)) : null,
+          p75: durations.length ? measureMinutes(percentile(durations, 0.75)) : null,
+          p90: durations.length ? measureMinutes(percentile(durations, 0.9)) : null,
+          max: durations.length ? measureMinutes(durations[durations.length - 1]) : null,
+        },
+        stale,
+        staleNote:
+          stale === 0
+            ? null
+            : String(stale) +
+              " completed job(s) exceeded one hour, which indicates abandoned retrieval rather than slow generation; exclude them before quoting a typical duration.",
+        histogram: TIMING_RANGES.map(([from, to]) => ({
+          range: to === null ? String(from) + "+ min" : String(from) + "-" + String(to) + " min",
+          count: durations.filter((duration) => duration >= from * MINUTE_MS && (to === null || duration < to * MINUTE_MS)).length,
+        })),
+      },
+      null,
+      2
+    )
+  );
+}
 
 async function importAuthCommand(args: string[], directory: URL): Promise<void> {
   if (args.length !== 2) {
@@ -163,6 +279,9 @@ async function main(args: string[]): Promise<void> {
     case "--status":
     case "--result":
       await jobLookupCommand(command, args, store);
+      return;
+    case "--timings":
+      await timingsCommand(args.slice(1), store);
       return;
     case "--watch":
       await watchCommand(args, store);
