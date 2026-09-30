@@ -135,7 +135,10 @@ export class JobStore {
       mode: 0o600,
     });
     try {
-      await file.lock(true);
+      if (!(await file.tryLock(true))) {
+        console.error("Another retrieval owner holds job " + id + "; waiting for it to finish. Do not start a second owner.");
+        await file.lock(true);
+      }
       return await action(await this.read(id));
     } finally {
       file.close();

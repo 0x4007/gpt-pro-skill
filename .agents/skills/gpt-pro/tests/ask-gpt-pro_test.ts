@@ -1,4 +1,5 @@
-import { answerForMessage, clientObservation, completedAnswer, parseSseText, redactSensitiveText } from "../scripts/ask-gpt-pro.ts";
+import { answerForMessage, clientObservation, completedAnswer, parseSseText, redactSensitiveText, retrievalVerdict } from "../scripts/ask-gpt-pro.ts";
+import type { ProJob } from "../scripts/jobs.ts";
 
 Deno.test("client observation reports the actual integrity cookie state", () => {
   const state = "ois1.example.ABCDEFGHIJKLMNOP.signature";
@@ -120,4 +121,38 @@ Deno.test("redactSensitiveText removes auth and long token values", () => {
   if (!redacted.includes("<redacted>")) {
     throw new Error("redaction marker missing");
   }
+});
+
+function verdictFixture(patch: Partial<ProJob>): ProJob {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    id: crypto.randomUUID(),
+    messageId: crypto.randomUUID(),
+    model: "gpt-6-pro",
+    account: "fixture-account",
+    prompt: "fixture-prompt",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    conversationId: crypto.randomUUID(),
+    pollCount: 1,
+    ...patch,
+  };
+}
+
+Deno.test("retrieval verdicts name the single next action per failure state", () => {
+  const minutesAgo = (value: number) => new Date(Date.now() - value * 60_000).toISOString();
+  const fresh = verdictFixture({ pollCount: 0, lastPollAt: undefined, createdAt: minutesAgo(1) });
+  if (retrievalVerdict(fresh) !== undefined) throw new Error("Fresh job needs no verdict");
+  const unretrieved = verdictFixture({ pollCount: 0, lastPollAt: undefined, createdAt: minutesAgo(6) });
+  if (!retrievalVerdict(unretrieved)?.startsWith("UNRETRIEVED")) throw new Error("Unretrieved job was not labeled");
+  const stalled = verdictFixture({ createdAt: minutesAgo(20), lastPollAt: minutesAgo(11) });
+  if (!retrievalVerdict(stalled)?.startsWith("STALLED")) throw new Error("Stalled job was not labeled");
+  const wedged = verdictFixture({ createdAt: minutesAgo(90), lastPollAt: minutesAgo(1) });
+  if (!retrievalVerdict(wedged)?.startsWith("WEDGED")) throw new Error("Wedged job was not labeled");
+  const throttled = verdictFixture({ createdAt: minutesAgo(90), lastPollAt: minutesAgo(1), rateLimitCount: 2, nextPollAt: minutesAgo(-5) });
+  if (!retrievalVerdict(throttled)?.startsWith("RATE-LIMITED")) throw new Error("Throttle did not outrank the wedge label");
+  const complete = verdictFixture({ status: "completed", answer: "done" });
+  if (retrievalVerdict(complete) !== undefined) throw new Error("Completed job was labeled");
 });

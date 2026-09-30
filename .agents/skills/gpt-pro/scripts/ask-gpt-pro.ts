@@ -4,7 +4,7 @@ import { reportUsage } from "./usage.ts";
 import { ChatSession, importWebSession, loadWebSession, parseSessionImport, parseWebSession, type WebSession } from "./session.ts";
 import { SentinelHarness } from "./sentinel.ts";
 import { answerForMessage, completedAnswer, conversationBody, parseSseText } from "./answers.ts";
-import { accountIdForSession, accountIdentity, captureConversation, pollJob, resultForJob, run, submitJob } from "./polling.ts";
+import { accountIdForSession, accountIdentity, captureConversation, pollJob, resultForJob, run, submitJob, WEDGE_FLOOR_MS } from "./polling.ts";
 import { CHATGPT_ORIGIN, clientObservation, errorText, redactSensitiveText } from "./shared.ts";
 
 // Public API: re-exported from this entry point so scripts/authenticate.ts and the tests keep
@@ -28,17 +28,34 @@ export {
 };
 export type { WebSession };
 
+/** A pending job with no poll for this long has most likely lost its owner to a reaped turn. */
+const STALLED_AFTER_MS = 10 * 60_000;
+
 /**
- * A job that was submitted and never polled is stranded, not dead: generation continues on the
- * server and the answer only needs a retrieval. Marking it here makes --jobs and --status say so
- * instead of leaving pollCount 0 to be misread as a cancellation.
+ * The failure states a reader must act on, derived from the local record alone. A job that was
+ * submitted and never polled is stranded, not dead; a job with no poll for ten minutes has most
+ * likely lost its owner; a job silent past the skill's one-hour floor is wedged and follows the
+ * resubmission rule instead of another long wait. The label is the instruction.
  */
-function retrievalNote(job: ProJob): string | undefined {
+export function retrievalVerdict(job: ProJob): string | undefined {
   if (job.status === "completed") return undefined;
   const ageMs = Date.now() - Date.parse(job.createdAt);
   if (!Number.isFinite(ageMs)) return undefined;
-  if ((job.pollCount ?? 0) === 0 && ageMs > UNRETRIEVED_AFTER_MS) {
-    return "UNRETRIEVED: submitted " + Math.round(ageMs / 60_000) + " min ago and never polled; run --result " + job.id;
+  if (job.status === "pending") {
+    const backoffMs = Date.parse(job.nextPollAt ?? "") - Date.now();
+    if ((job.rateLimitCount ?? 0) > 0 || backoffMs > 60_000) {
+      return "RATE-LIMITED: backoff until " + (job.nextPollAt ?? "the next poll") + "; keep this job and resume with --result " + job.id + "; do not resubmit.";
+    }
+    if (ageMs > WEDGE_FLOOR_MS) {
+      return "WEDGED: no answer after " + Math.round(ageMs / MINUTE_MS) + " min; the skill permits one resubmission of the prompt as a new job. Keep this record; a late answer can still be collected with --result " + job.id + ".";
+    }
+    const lastPollAgeMs = Date.now() - Date.parse(job.lastPollAt ?? "");
+    if ((job.pollCount ?? 0) > 0 && Number.isFinite(lastPollAgeMs) && lastPollAgeMs > STALLED_AFTER_MS) {
+      return "STALLED: no poll for " + Math.round(lastPollAgeMs / MINUTE_MS) + " min; the retrieval owner may have died - resume with --result " + job.id + ", never resubmit.";
+    }
+    if ((job.pollCount ?? 0) === 0 && ageMs > UNRETRIEVED_AFTER_MS) {
+      return "UNRETRIEVED: submitted " + Math.round(ageMs / 60_000) + " min ago and never polled; run --result " + job.id;
+    }
   }
   return undefined;
 }
@@ -46,7 +63,7 @@ function retrievalNote(job: ProJob): string | undefined {
 function jobSummary(job: ProJob) {
   return {
     jobId: job.id,
-    retrieval: retrievalNote(job),
+    retrieval: retrievalVerdict(job),
     status: job.status,
     model: job.model,
     createdAt: job.createdAt,
@@ -62,7 +79,7 @@ function jobSummary(job: ProJob) {
 }
 
 const HELP_TEXT =
-  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background [--keep-polling]] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--background submits and exits; nothing is retrieved until a separate --result or --watch runs.\nAdd --keep-polling to submit and stay resident retrieving the answer in one command.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
+  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background [--keep-polling]] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--background submits and exits; nothing is retrieved until a separate --result or --watch runs.\nAdd --keep-polling to submit and stay resident retrieving in one command; hold that process in a live\nsession, because a detached parent is reaped when the calling turn ends.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
 
 const MINUTE_MS = 60_000;
 
@@ -278,6 +295,7 @@ async function promptCommand(args: string[], store: JobStore): Promise<void> {
     }
     // Report the handle before the long poll so an interrupted caller still has the job ID.
     console.error("GPT Pro job: " + job.id + " (retrieving; resume with --result " + job.id + ")");
+    console.error("Hold this process in a live session until it returns; a detached parent is reaped when the calling turn ends.");
     console.log(JSON.stringify({ jobId: job.id, status: "retrieving" }));
     const answer = await resultForJob(job.id, store);
     console.log(JSON.stringify({ jobId: job.id, status: "completed", answer }));

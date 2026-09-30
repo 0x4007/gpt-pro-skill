@@ -1,5 +1,6 @@
 import { answerForMessage, captureConversation, pollJob, resultForJob } from "../scripts/ask-gpt-pro.ts";
 import { JobStore, POLL_WINDOW_MS, type ProJob } from "../scripts/jobs.ts";
+import { WEDGE_FLOOR_MS, WEDGE_GRACE_MS } from "../scripts/polling.ts";
 
 function fixture(id = crypto.randomUUID()): ProJob {
   return {
@@ -39,7 +40,7 @@ function conversation(job: ProJob, answer = "fixture-answer") {
   };
 }
 
-Deno.test("six-hour polling expires without submitting and can resume the same job", async () => {
+Deno.test("a silent job stops at the wedge floor with a preserved record, and late answers still collect", async () => {
   const job = fixture();
   let clock = 0,
     calls = 0;
@@ -57,7 +58,8 @@ Deno.test("six-hour polling expires without submitting and can resume the same j
       return Promise.resolve(Response.json({ mapping: {} }));
     },
   };
-  let timedOut = false;
+  let stopped = false,
+    message = "";
   try {
     await pollJob(fetcher, job, async () => {}, {
       now: () => clock,
@@ -66,15 +68,24 @@ Deno.test("six-hour polling expires without submitting and can resume the same j
         return Promise.resolve();
       },
     });
-  } catch {
-    timedOut = true;
+  } catch (error) {
+    stopped = true;
+    message = (error as Error).message;
   }
-  if (!timedOut || clock !== POLL_WINDOW_MS || POLL_WINDOW_MS !== 21600000 || job.status !== "timed_out" || calls < 700)
-    throw new Error("Incorrect six-hour window");
-  const resumed = await pollJob({ fetch: () => Promise.resolve(Response.json(conversation(job))) }, job, async () => {});
-  if (resumed !== "fixture-answer" || (job.status as string) !== "completed") {
-    throw new Error("Existing job could not resume");
+  if (
+    !stopped ||
+    !message.includes("wedged") ||
+    job.status !== "pending" ||
+    clock < WEDGE_FLOOR_MS ||
+    clock > WEDGE_FLOOR_MS + WEDGE_GRACE_MS + 60_000 ||
+    calls > 200
+  )
+    throw new Error("Wedge floor did not stop the owner with a resumable record");
+  const resumed = await pollJob({ fetch: () => Promise.resolve(Response.json(conversation(job, "late-answer"))) }, job, async () => {});
+  if (resumed !== "late-answer" || (job.status as string) !== "completed") {
+    throw new Error("A late answer was lost after the wedge stop");
   }
+  if (POLL_WINDOW_MS <= WEDGE_FLOOR_MS) throw new Error("Wedge floor no longer bounds the poll window");
 });
 
 Deno.test("transient GET failures honor Retry-After; auth failures preserve resumable state", async () => {
@@ -222,7 +233,7 @@ Deno.test("interrupted retrieval preserves Retry-After and backoff in the job st
   }
 });
 
-Deno.test("saved cooldown beyond the poll window makes no request", async () => {
+Deno.test("a saved cooldown past the wedge floor stops without a request and keeps the cooldown", async () => {
   const job = fixture();
   job.nextPollAt = new Date(POLL_WINDOW_MS * 2).toISOString();
   let clock = 0,
@@ -246,8 +257,15 @@ Deno.test("saved cooldown beyond the poll window makes no request", async () => 
       }
     );
   } catch {}
-  if (calls !== 0 || clock !== POLL_WINDOW_MS || job.status !== "timed_out" || Date.parse(job.nextPollAt) !== POLL_WINDOW_MS * 2) {
-    throw new Error("Saved cooldown did not respect the bounded poll window");
+  if (
+    calls !== 0 ||
+    clock < WEDGE_FLOOR_MS ||
+    clock > WEDGE_FLOOR_MS + WEDGE_GRACE_MS + 30_000 ||
+    job.status !== "pending" ||
+    Date.parse(job.nextPollAt) !== POLL_WINDOW_MS * 2 ||
+    !job.lastError?.includes("cooldown")
+  ) {
+    throw new Error("Saved cooldown did not respect the bounded owner");
   }
 });
 

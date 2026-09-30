@@ -53,6 +53,7 @@ deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=cha
 | ------------------------- | --------------------------------------------- |
 | `<prompt>`                | Submit once, wait, print the answer           |
 | `--background <prompt>`   | Submit once and return a job summary          |
+| `--background --keep-polling <prompt>` | Submit and stay resident retrieving; hold the process in a live session |
 | `--result <job-id>`       | Wait for one job or print its cached answer   |
 | `--watch`                 | Retrieve the pending jobs as JSON lines       |
 | `--jobs`                  | List local job summaries as JSON              |
@@ -66,8 +67,11 @@ Private state defaults to `~/.local/share/gpt-pro/` with owner-only permissions.
 Override it with `--state-dir /absolute/path` before any command. Job records
 hold prompts and answers, so keep them private.
 
-Retrieval polls for up to six hours after submission and never resubmits the
-prompt. Resume an interrupted job with the same ID.
+Retrieval takes one owned lifecycle: keep `--result <job-id>` in a session that
+stays alive until it returns, or hand the job off explicitly. A silent job stops
+with the wedge verdict past a full hour instead of polling for six. Resume an
+interrupted job with the same ID; never resubmit except under the skill's wedge
+rule.
 
 ## Verify
 

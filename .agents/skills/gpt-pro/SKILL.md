@@ -40,38 +40,22 @@ treating a submission as a fallback.
 
 Set `SKILL_DIR` to this skill's installed folder.
 
-Submit and wait for the answer:
+Submit and retrieve as one owned lifecycle. A helper process detached from a finished command (`nohup`, `&`, `disown`; macOS has no `setsid`) is reaped when the turn ends, so a poller left behind by a turn is not running. Three jobs were stranded or killed this way on 2026-09-30. Keep the poller inside a session that is alive until the answer returns.
 
 ```sh
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
-  "$SKILL_DIR/scripts/ask-gpt-pro.ts" "<prompt>"
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --background "<prompt>"   # prints the job ID in seconds
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --result <job-id>         # keep this session; it returns the answer
 ```
 
-For a complex question, prefer one command that owns the whole lifecycle. This
-submits and stays resident retrieving the answer, so there is no handle to
-abandon:
+`--result` is a long poll, not a single check. Run it as a session you keep and read; do not pipe it through `tail`, which hides a failed login or a 429 until it returns. It returns when the answer exists, and past a full hour of silence it stops with the wedge verdict instead of holding the turn for six hours.
 
-```sh
-deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
-  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --background --keep-polling "<prompt>"
-```
+`--background --keep-polling` is that lifecycle in one command, and is only safe when the caller is a supervisor that keeps the process alive to the end, not when an agent fires it detached and ends its turn. Whenever you did not hold the process yourself, verify the owner before trusting it: `pgrep -fl "ask-gpt-pro.ts --result <job-id>"` and `--status` showing a rising `pollCount`, two checks about a minute apart.
 
-`--background` alone submits and exits, and **nothing then polls the job**. Only
-use it when you will run `--result <job-id>` or `--watch` yourself in the same
-working session; a caller that ends its turn after `--background` strands the
-answer until someone notices. This has happened twice, so treat the bare
-`--background` form as the exception rather than the default.
+Ending a turn with a pending job is allowed only as an explicit handoff: leave the job ID, the `--status` output, and the exact resume command (`--result <job-id>`) in task state, and say the job is unretrieved. The next owner resumes that job; it never resubmits unless the wedge rule applies. Before starting an owner, check for a live one; the per-job lock serializes pollers, but a second owner is invisible work, so never stack them.
 
-Then retrieve that job, or all pending jobs, through the agent's background
-process tool:
-
-```sh
-deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
-  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --result <job-id>
-
-deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
-  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --watch
-```
+`--jobs` and `--status` name the failure states, and the label is the instruction: `UNRETRIEVED` (never polled) run `--result`; `STALLED` (no poll for 10+ min, owner likely dead) resume with `--result`; `RATE-LIMITED` honor the cooldown and resume, never resubmit; `WEDGED` (silent past a full hour) apply the wedge rule below. Never end a turn leaving `UNRETRIEVED` or `STALLED` unactioned.
 
 `--jobs` lists local jobs and `--status <job-id>` inspects one without polling.
 Prompts may be piped on stdin. Place `--state-dir /absolute/path` before the
@@ -108,13 +92,7 @@ HTTP/HTTPS default using `/home/codex/.local/share/gpt-pro-browser-login`; keep
 the locked original profile intact. This is a maintainer environment note and
 does not authorize cross-host credential or session transfer.
 
-A job is retrievable for six hours after submission. Generation continues on the
-server, so run waiting commands in the background and keep their handle.
-Retrieval never submits the prompt again for a job that is still
-generating. Completed results are cached and can be reread without network
-access. A job that has produced nothing for a full hour is the one exception,
-described under "Resubmitting a wedged job" below. Local tests:
-`deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
+A job is retrievable for six hours after submission. Generation continues on the server, so hold each waiting command in a live session and keep its handle. Retrieval never submits the prompt again for a job that is still generating. Completed results are cached and can be reread without network access. A job that has produced nothing for a full hour is the one exception, described under "Resubmitting a wedged job" below. Local tests: `deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
 
 ## Retrieval cadence
 
@@ -125,9 +103,12 @@ resubmit such a job, retrieve it.
 
 `--result` and `--watch` are long polls, not single checks. They take the
 per-job lock, poll internally (every 5 s for the first six attempts, then every
-30 s), and return as soon as the answer exists. Run them in the background so
-the answer arrives as a completion event instead of blocking a turn; a
-foregrounded call hides a 429 or a failed login until it returns. `--watch`
+30 s), and return as soon as the answer exists. Hold them in a session that
+stays alive for the whole wait; never detach them, and never end that session
+while the job is pending. Their output is the only place a failed login or a 429
+surfaces before the wait ends, so read it rather than piping it away. A silent
+job that passes the wedge floor stops with the wedge verdict; act on it instead
+of restarting the poll. `--watch`
 waits on every pending job rather than a chosen one, so prefer
 `--result <job-id>` whenever more than one job is outstanding.
 
@@ -139,25 +120,11 @@ safe rate from a weekly ChatGPT allowance. The one case that does authorize a
 new submission is a job that has produced nothing for a full hour: it is wedged,
 not slow, and waiting longer cannot fix it.
 
-Manual timing is a fallback for when no retrieval owner is running or a
-backgrounded one may have died. As measured on 2026-09-17, completed jobs ran a
-median 15.6 min, p90 19.5 min, max 20.2 min, with the spread close to flat, so
-roughly half are still running at the median. A first check near 12 min catches
-the fast third; then check every 60 s. Check with `--status`, which is a local
-file read using no network; never point the check-in schedule at `--result`,
-which retrieves over the network on each poll. Past about 22 min, suspect an
-authentication or retrieval fault rather than slowness, because a working long
-poll and a wedged one look identical. Those figures describe one account and
-machine; re-measure locally rather than treating them as universal.
+Manual timing is a fallback for when no retrieval owner is running. As measured on 2026-09-17, completed jobs ran a median 15.6 min, p90 19.5 min, max 20.2 min, with the spread close to flat, so roughly half are still running at the median. A first check near 12 min catches the fast third; then check every 60 s. Check with `--status`, which is a local file read using no network; never point the check-in schedule at `--result`, which retrieves over the network on each poll. Past about 22 min, suspect an authentication or retrieval fault rather than slowness, because a working long poll and a wedged one look identical. The CLI stops a silent poll at the wedge floor, so treat that verdict as the fault signal rather than waiting again. Those figures describe one account and machine; re-measure locally rather than treating them as universal.
 
 ## Resubmitting a wedged job
 
-A job that has produced no node text for a full hour is wedged. You have
-standing permission to resubmit its prompt as a new job without asking first.
-The hour is a floor, not a deadline to act at: it exists because a working long
-poll and a wedged one look identical, so elapsed time is the only signal that
-separates them, and `--timings` uses that same one-hour threshold to call
-completed jobs abandoned rather than slow.
+A job that has produced no node text for a full hour is wedged. You have standing permission to resubmit its prompt as a new job without asking first. The CLI computes this state for you: `--status` prints the `WEDGED` verdict once a pending job passes the floor with no answer, and `--result` stops after a bounded recheck past the floor rather than polling for six hours. The hour is a floor, not a deadline to act at: it exists because a working long poll and a wedged one look identical, so elapsed time is the only signal that separates them, and `--timings` uses that same one-hour threshold to call completed jobs abandoned rather than slow.
 
 Resubmitting requires the job to have produced **nothing**, not merely to be old.
 Check both before you act:
@@ -175,12 +142,10 @@ to lose. Keep its record rather than deleting it, so a later reader can see that
 the prompt was submitted twice and why.
 
 Measured on 2026-09-30, which is why this section exists. One job ran to
-`pollCount` 451 over 10.6 hours while producing no node text at all; the local
-record held only the prompt, the conversation id, and polling metadata. Quota was
-not the constraint: four local attempts against an allowance of 200, with
-`paceStatus` reporting `within_local_pace`. Every signal said healthy except the
-answer that never came, which is the shape of a wedged job and the reason a
-caller needs permission to stop waiting.
+`pollCount` 451 over 10.6 hours with no answer text; every signal said healthy
+except the answer that never came. Quota was not the constraint (four local
+attempts against an allowance of 200). That is the shape of a wedged job, and
+the reason a caller needs permission to stop waiting.
 
 Resubmitting costs a model turn, so do it once, with the original prompt
 unchanged, and treat a second wedge as a fault to report rather than a prompt to

@@ -21,6 +21,16 @@ interface PollOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/**
+ * A job with no answer for this long is wedged rather than slow: measured completions sit below
+ * 25 minutes, and the skill's own wedge rule uses the same one-hour floor before a caller may stop
+ * waiting. The floor bounds a single owner; the record stays retrievable for a later recheck.
+ */
+export const WEDGE_FLOOR_MS = 60 * 60 * 1000;
+
+/** Extra polling past the floor so an answer that landed just before it is still collected. */
+export const WEDGE_GRACE_MS = 2 * 60 * 1000;
+
 /** What one retrieval attempt decided: keep polling, stop with an error, or finish with an answer. */
 interface PollAttempt {
   retryable: boolean;
@@ -91,7 +101,11 @@ export async function pollJob(
 ): Promise<string> {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const deadline = now() + POLL_WINDOW_MS;
+  const submittedAt = Date.parse(job.submissionAttemptedAt ?? job.createdAt);
+  const wedgeAt = Number.isFinite(submittedAt) ? submittedAt + WEDGE_FLOOR_MS : Number.POSITIVE_INFINITY;
+  // Past the floor, a fresh caller only performs a bounded recheck for an answer that has already
+  // landed; a silent wedge must not hold a turn for six hours again.
+  const deadline = now() >= wedgeAt ? now() + WEDGE_GRACE_MS : Math.min(now() + POLL_WINDOW_MS, wedgeAt + WEDGE_GRACE_MS);
   const conversationId = requiredString(job.conversationId, "Job conversation ID");
   job.status = "pending";
   await save(job);
@@ -113,6 +127,23 @@ export async function pollJob(
     if (!attempt.retryable) throw new Error(job.lastError);
     const remaining = deadline - now();
     if (remaining > 0) await sleep(Math.min(attempt.delay, remaining));
+  }
+  if (now() >= wedgeAt) {
+    const nextPollAtMs = Date.parse(job.nextPollAt ?? "");
+    job.lastError =
+      (job.rateLimitCount ?? 0) > 0 || (Number.isFinite(nextPollAtMs) && nextPollAtMs - now() > 60_000)
+        ? "No answer within " +
+          String(Math.round(WEDGE_FLOOR_MS / 60_000)) +
+          "+ min and " +
+          String(job.pollCount) +
+          " polls and a retrieval cooldown is still pending (next poll " + (job.nextPollAt ?? "unknown") + "). Honor the cooldown: check --status and resume this job; do not resubmit."
+        : "No answer after " +
+          String(Math.round(WEDGE_FLOOR_MS / 60_000)) +
+          "+ min and " +
+          String(job.pollCount) +
+          " polls: treat as wedged, not slow. The skill permits one resubmission of the prompt as a new job; this record stays available for a late answer.";
+    await save(job);
+    throw new Error(job.lastError);
   }
   job.status = "timed_out";
   job.lastError = "No completed answer within six hours; resume this job without resubmitting";
