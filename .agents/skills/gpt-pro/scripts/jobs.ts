@@ -54,6 +54,20 @@ function isJobRecord(value: unknown, id: string): value is ProJob {
   );
 }
 
+/** Raised when a second retrieval owner attempts a job whose lock a live owner holds. */
+export class JobLockedError extends Error {
+  constructor(readonly jobId: string) {
+    super(
+      "ALREADY_OWNED: job " +
+        jobId +
+        " already has a live retrieval owner; no polling started. Inspect --status " +
+        jobId +
+        " and supervise or recover that owner."
+    );
+    this.name = "JobLockedError";
+  }
+}
+
 export class JobStore {
   constructor(readonly directory = new URL(".gpt-pro-jobs/", stateDirectory())) {}
   private _path(id: string, suffix = ".json"): URL {
@@ -135,10 +149,9 @@ export class JobStore {
       mode: 0o600,
     });
     try {
-      if (!(await file.tryLock(true))) {
-        console.error("Another retrieval owner holds job " + id + "; waiting for it to finish. Do not start a second owner.");
-        await file.lock(true);
-      }
+      // Fail fast: a second retriever must surface as ALREADY_OWNED instead of silently queueing
+      // behind the live owner, because an invisible waiter reads as a hung process to its caller.
+      if (!(await file.tryLock(true))) throw new JobLockedError(id);
       return await action(await this.read(id));
     } finally {
       file.close();

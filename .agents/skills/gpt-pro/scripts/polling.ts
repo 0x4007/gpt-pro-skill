@@ -103,9 +103,18 @@ export async function pollJob(
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const submittedAt = Date.parse(job.submissionAttemptedAt ?? job.createdAt);
   const wedgeAt = Number.isFinite(submittedAt) ? submittedAt + WEDGE_FLOOR_MS : Number.POSITIVE_INFINITY;
+  const expiryAt = Number.isFinite(submittedAt) ? submittedAt + POLL_WINDOW_MS : Number.POSITIVE_INFINITY;
+  if (now() >= expiryAt) {
+    job.status = "timed_out";
+    job.lastError = "Automatic retrieval closed 6 hours after submission; the server outcome is unknown. Report the window fault; do not resubmit automatically.";
+    await save(job);
+    throw new Error(job.lastError);
+  }
   // Past the floor, a fresh caller only performs a bounded recheck for an answer that has already
-  // landed; a silent wedge must not hold a turn for six hours again.
-  const deadline = now() >= wedgeAt ? now() + WEDGE_GRACE_MS : Math.min(now() + POLL_WINDOW_MS, wedgeAt + WEDGE_GRACE_MS);
+  // landed. The window is fixed at submission time, so restarts, takeovers, and handoffs never
+  // extend it.
+  const baseDeadline = now() >= wedgeAt ? now() + WEDGE_GRACE_MS : Math.min(now() + POLL_WINDOW_MS, wedgeAt + WEDGE_GRACE_MS);
+  const deadline = Math.min(baseDeadline, expiryAt);
   const conversationId = requiredString(job.conversationId, "Job conversation ID");
   job.status = "pending";
   await save(job);
@@ -141,7 +150,7 @@ export async function pollJob(
           String(Math.round(WEDGE_FLOOR_MS / 60_000)) +
           "+ min and " +
           String(job.pollCount) +
-          " polls: treat as wedged, not slow. The skill permits one resubmission of the prompt as a new job; this record stays available for a late answer.";
+          " polls: treat as wedged, not slow. Stop and report it; replacing the prompt needs unused explicit authorization and happens once, unchanged. This record stays available for a late answer.";
     await save(job);
     throw new Error(job.lastError);
   }

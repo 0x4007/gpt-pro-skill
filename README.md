@@ -51,9 +51,7 @@ deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=cha
 
 | Command                   | Result                                        |
 | ------------------------- | --------------------------------------------- |
-| `<prompt>`                | Submit once, wait, print the answer           |
-| `--background <prompt>`   | Submit once and return a job summary          |
-| `--background --keep-polling <prompt>` | Submit and stay resident retrieving; hold the process in a live session |
+| `<prompt>`                | Submit once, wait, print the answer in this session |
 | `--result <job-id>`       | Wait for one job or print its cached answer   |
 | `--watch`                 | Retrieve the pending jobs as JSON lines       |
 | `--jobs`                  | List local job summaries as JSON              |
@@ -67,11 +65,13 @@ Private state defaults to `~/.local/share/gpt-pro/` with owner-only permissions.
 Override it with `--state-dir /absolute/path` before any command. Job records
 hold prompts and answers, so keep them private.
 
-Retrieval takes one owned lifecycle: keep `--result <job-id>` in a session that
-stays alive until it returns, or hand the job off explicitly. A silent job stops
-with the wedge verdict past a full hour instead of polling for six. Resume an
-interrupted job with the same ID; never resubmit except under the skill's wedge
-rule.
+Retrieval takes one owned lifecycle: keep the submit or `--result <job-id>`
+command in a managed session you service until it returns, or hand the job off
+explicitly. The removed `--background` and `--keep-polling` switches are
+rejected before submission; a second retriever exits 10 with `ALREADY_OWNED`. A
+silent job stops with the wedge verdict past a full hour instead of polling for
+six, and the six-hour retrieval window never extends. Resume an interrupted job
+with the same ID; resubmitting needs unused explicit authorization.
 
 ## Verify
 

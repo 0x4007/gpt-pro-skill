@@ -1,5 +1,5 @@
 import { answerForMessage, captureConversation, pollJob, resultForJob } from "../scripts/ask-gpt-pro.ts";
-import { JobStore, POLL_WINDOW_MS, type ProJob } from "../scripts/jobs.ts";
+import { JobLockedError, JobStore, POLL_WINDOW_MS, type ProJob } from "../scripts/jobs.ts";
 import { WEDGE_FLOOR_MS, WEDGE_GRACE_MS } from "../scripts/polling.ts";
 
 function fixture(id = crypto.randomUUID()): ProJob {
@@ -81,11 +81,44 @@ Deno.test("a silent job stops at the wedge floor with a preserved record, and la
     calls > 200
   )
     throw new Error("Wedge floor did not stop the owner with a resumable record");
-  const resumed = await pollJob({ fetch: () => Promise.resolve(Response.json(conversation(job, "late-answer"))) }, job, async () => {});
+  const resumed = await pollJob({ fetch: () => Promise.resolve(Response.json(conversation(job, "late-answer"))) }, job, async () => {}, {
+    now: () => clock,
+    sleep: (ms) => {
+      clock += ms;
+      return Promise.resolve();
+    },
+  });
   if (resumed !== "late-answer" || (job.status as string) !== "completed") {
     throw new Error("A late answer was lost after the wedge stop");
   }
   if (POLL_WINDOW_MS <= WEDGE_FLOOR_MS) throw new Error("Wedge floor no longer bounds the poll window");
+});
+
+Deno.test("an expired job reports the closed window without another request", async () => {
+  const job = fixture();
+  let calls = 0,
+    message = "";
+  try {
+    await pollJob(
+      {
+        fetch: () => {
+          calls++;
+          return Promise.resolve(Response.json(conversation(job)));
+        },
+      },
+      job,
+      async () => {},
+      {
+        now: () => POLL_WINDOW_MS + 1,
+        sleep: () => Promise.resolve(),
+      }
+    );
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  if (calls !== 0 || job.status !== "timed_out" || !message.includes("closed 6 hours after submission")) {
+    throw new Error("The retrieval window was extended or re-requested after expiry");
+  }
 });
 
 Deno.test("transient GET failures honor Retry-After; auth failures preserve resumable state", async () => {
@@ -127,6 +160,7 @@ Deno.test("transient GET failures honor Retry-After; auth failures preserve resu
     throw new Error("Read retry policy failed");
   }
   const denied = fixture();
+  denied.createdAt = new Date().toISOString();
   let rejected = false;
   try {
     await pollJob({ fetch: () => Promise.resolve(new Response(null, { status: 401 })) }, denied, async () => {}, {
@@ -357,18 +391,42 @@ Deno.test("private job store isolates concurrent jobs and resumes cached results
     const reloaded = new JobStore(store.directory);
     if ((await resultForJob(a.id, reloaded)) !== "answer-prompt-a" || (await resultForJob(b.id, reloaded)) !== "answer-prompt-b")
       throw new Error("Results crossed job boundaries");
-    await Promise.all(
-      Array.from({ length: 5 }, () =>
-        store.withLock(a.id, async (job) => {
-          const before = job.pollCount;
-          await new Promise((resolve) => setTimeout(resolve, 1));
-          job.pollCount = before + 1;
-          await store.save(job);
-        })
-      )
-    );
+    let signalAcquired: () => void = () => {};
+    const acquired = new Promise<void>((resolve) => {
+      signalAcquired = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = store.withLock(a.id, async (job) => {
+      job.pollCount = job.pollCount + 1;
+      await store.save(job);
+      signalAcquired();
+      await gate;
+    });
+    await acquired;
+    let contended: unknown;
+    try {
+      await store.withLock(a.id, async () => {});
+    } catch (error) {
+      contended = error;
+    }
+    release();
+    await holder;
+    if (!(contended instanceof JobLockedError) || !contended.message.includes("ALREADY_OWNED")) {
+      throw new Error("A second owner waited instead of exiting ALREADY_OWNED");
+    }
+    for (let index = 0; index < 4; index++) {
+      await store.withLock(a.id, async (job) => {
+        const before = job.pollCount;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        job.pollCount = before + 1;
+        await store.save(job);
+      });
+    }
     if ((await store.read(a.id)).pollCount !== 5) {
-      throw new Error("Concurrent writers lost an update");
+      throw new Error("Sequential writers lost an update");
     }
     const info = await Deno.stat(new URL(a.id + ".json", store.directory));
     if (info.mode !== null && (info.mode & 0o077) !== 0) {
@@ -391,6 +449,7 @@ Deno.test("private job store isolates concurrent jobs and resumes cached results
 
 Deno.test("failure to persist a completed answer is not hidden as a network retry", async () => {
   const job = fixture();
+  job.createdAt = new Date().toISOString();
   let saves = 0,
     calls = 0,
     failed = false;

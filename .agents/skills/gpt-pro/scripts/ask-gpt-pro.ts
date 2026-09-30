@@ -1,10 +1,10 @@
 import { stateDirectory } from "./state.ts";
-import { JobStore, type ProJob } from "./jobs.ts";
+import { JobLockedError, JobStore, type ProJob } from "./jobs.ts";
 import { reportUsage } from "./usage.ts";
 import { ChatSession, importWebSession, loadWebSession, parseSessionImport, parseWebSession, type WebSession } from "./session.ts";
 import { SentinelHarness } from "./sentinel.ts";
 import { answerForMessage, completedAnswer, conversationBody, parseSseText } from "./answers.ts";
-import { accountIdForSession, accountIdentity, captureConversation, pollJob, resultForJob, run, submitJob, WEDGE_FLOOR_MS } from "./polling.ts";
+import { accountIdForSession, accountIdentity, captureConversation, pollJob, resultForJob, run, WEDGE_FLOOR_MS } from "./polling.ts";
 import { CHATGPT_ORIGIN, clientObservation, errorText, redactSensitiveText } from "./shared.ts";
 
 // Public API: re-exported from this entry point so scripts/authenticate.ts and the tests keep
@@ -47,7 +47,7 @@ export function retrievalVerdict(job: ProJob): string | undefined {
       return "RATE-LIMITED: backoff until " + (job.nextPollAt ?? "the next poll") + "; keep this job and resume with --result " + job.id + "; do not resubmit.";
     }
     if (ageMs > WEDGE_FLOOR_MS) {
-      return "WEDGED: no answer after " + Math.round(ageMs / MINUTE_MS) + " min; the skill permits one resubmission of the prompt as a new job. Keep this record; a late answer can still be collected with --result " + job.id + ".";
+      return "WEDGED: no answer after " + Math.round(ageMs / MINUTE_MS) + " min; polling stopped, server outcome unknown. ACTION: report it; a replacement needs unused explicit authorization and is submitted once, unchanged. A late answer can still be collected with --result " + job.id + ".";
     }
     const lastPollAgeMs = Date.now() - Date.parse(job.lastPollAt ?? "");
     if ((job.pollCount ?? 0) > 0 && Number.isFinite(lastPollAgeMs) && lastPollAgeMs > STALLED_AFTER_MS) {
@@ -79,7 +79,7 @@ function jobSummary(job: ProJob) {
 }
 
 const HELP_TEXT =
-  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background [--keep-polling]] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--background submits and exits; nothing is retrieved until a separate --result or --watch runs.\nAdd --keep-polling to submit and stay resident retrieving in one command; hold that process in a live\nsession, because a detached parent is reaped when the calling turn ends.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
+  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\nRun the submit command in a managed session you keep until it returns; it prints the job ID first.\nDetaching a poller (nohup, &, disown, or the removed --background switches) strands the job here.\nA second retrieval owner exits 10 with ALREADY_OWNED instead of waiting.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
 
 const MINUTE_MS = 60_000;
 
@@ -257,6 +257,10 @@ async function watchCommand(args: string[], store: JobStore): Promise<void> {
         const answer = await resultForJob(job.id, store);
         console.log(JSON.stringify({ jobId: job.id, status: "completed", answer }));
       } catch (error) {
+        if (error instanceof JobLockedError) {
+          console.log(JSON.stringify({ jobId: job.id, status: "contended", error: redactSensitiveText(errorText(error)) }));
+          return;
+        }
         console.log(
           JSON.stringify({
             jobId: job.id,
@@ -271,13 +275,12 @@ async function watchCommand(args: string[], store: JobStore): Promise<void> {
 }
 
 async function promptCommand(args: string[], store: JobStore): Promise<void> {
-  const background = args[0] === "--background";
-  let promptArgs = background ? args.slice(1) : args;
-  // Submitting without retrieving is the documented way jobs are stranded: --background exits
-  // immediately, so the answer waits for a later --result that the caller may never run.
-  // --keep-polling keeps one process owning the whole lifecycle instead.
-  const keepPolling = background && promptArgs[0] === "--keep-polling";
-  if (keepPolling) promptArgs = promptArgs.slice(1);
+  if (args[0] === "--background" || args[0] === "--keep-polling") {
+    throw new Error(
+      "The --background and --keep-polling switches were removed: this host reaps a detached poller at turn end, which strands jobs. Run the plain submit command in a managed session you keep instead; it prints the job ID before it waits, so stop that session only as an explicit handoff. Resume retrieval with --result <job-id>."
+    );
+  }
+  let promptArgs = args;
   if (promptArgs[0] === "--") promptArgs = promptArgs.slice(1);
   else if (promptArgs[0]?.startsWith("--")) {
     throw new Error("Unknown option; use -- before a prompt that starts with --");
@@ -285,21 +288,7 @@ async function promptCommand(args: string[], store: JobStore): Promise<void> {
   let prompt = promptArgs.join(" ").trim();
   if (!prompt) prompt = (await new Response(Deno.stdin.readable).text()).trim();
   if (!prompt) throw new Error("Provide a prompt as arguments or stdin");
-  if (background) {
-    const job = await submitJob(prompt, store, (job) => {
-      console.error("GPT Pro job: " + job.id);
-    });
-    if (!keepPolling) {
-      console.log(JSON.stringify(jobSummary(job)));
-      return;
-    }
-    // Report the handle before the long poll so an interrupted caller still has the job ID.
-    console.error("GPT Pro job: " + job.id + " (retrieving; resume with --result " + job.id + ")");
-    console.error("Hold this process in a live session until it returns; a detached parent is reaped when the calling turn ends.");
-    console.log(JSON.stringify({ jobId: job.id, status: "retrieving" }));
-    const answer = await resultForJob(job.id, store);
-    console.log(JSON.stringify({ jobId: job.id, status: "completed", answer }));
-  } else console.log(await run(prompt, store));
+  console.log(await run(prompt, store));
 }
 
 async function main(args: string[]): Promise<void> {
@@ -346,6 +335,6 @@ if (import.meta.main) {
     await main(Deno.args);
   } catch (error) {
     console.error(redactSensitiveText(errorText(error)));
-    Deno.exitCode = 1;
+    Deno.exitCode = error instanceof JobLockedError ? 10 : 1;
   }
 }
