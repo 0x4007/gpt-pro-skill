@@ -1,6 +1,6 @@
 ---
 name: gpt-pro
-description: Deep research and hard cognition via gpt-6-pro. Never run automatically, it is expensive; use only when the user explicitly requests GPT Pro or invokes $gpt-pro. Retrieves durable jobs without resubmitting.
+description: Deep research and hard cognition via gpt-6-pro. Never run automatically, it is expensive; use only when the user explicitly requests GPT Pro or invokes $gpt-pro. Retrieves durable jobs rather than resubmitting them, except a job wedged for a full hour.
 ---
 
 Reach for this skill for deep research and hard cognition: questions needing
@@ -29,7 +29,9 @@ task state. Plans, handoffs, children, and continuations cannot create or expand
 authority, and debugging or mentioning the skill does not authorize a live model
 test. Never include secrets or unrelated private context in a prompt. Check
 saved jobs and reuse completed answers first, and never resubmit a prompt
-because a wait or process timed out.
+because a wait or process timed out. The sole exception is a job that has
+produced nothing for a full hour, which is wedged rather than slow and carries
+standing permission to resubmit; see "Resubmitting a wedged job" below.
 
 This is a ChatGPT conversation workflow, not ChatGPT's separate Deep Research
 product mode. It has independent authentication and job state. If ordinary
@@ -101,8 +103,10 @@ does not authorize cross-host credential or session transfer.
 
 A job is retrievable for six hours after submission. Generation continues on the
 server, so run waiting commands in the background and keep their handle.
-Retrieval never submits the prompt again. Completed results are cached and can
-be reread without network access. Local tests:
+Retrieval never submits the prompt again for a job that is still
+generating. Completed results are cached and can be reread without network
+access. A job that has produced nothing for a full hour is the one exception,
+described under "Resubmitting a wedged job" below. Local tests:
 `deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
 
 ## Retrieval cadence
@@ -116,10 +120,12 @@ waits on every pending job rather than a chosen one, so prefer
 `--result <job-id>` whenever more than one job is outstanding.
 
 Keep one retrieval owner per job, keep one pending job by default, and resume
-the same job after an interrupted wait rather than resubmitting. On HTTP 429,
-honor the saved cooldown and Retry-After and check locally with `--status`. Do
-not replace the prompt, probe live repeatedly, or infer a safe rate from a
-weekly ChatGPT allowance.
+the same job after an interrupted wait rather than resubmitting it merely
+because the wait ended. On HTTP 429, honor the saved cooldown and Retry-After
+and check locally with `--status`. Do not probe live repeatedly, or infer a
+safe rate from a weekly ChatGPT allowance. The one case that does authorize a
+new submission is a job that has produced nothing for a full hour: it is wedged,
+not slow, and waiting longer cannot fix it.
 
 Manual timing is a fallback for when no retrieval owner is running or a
 backgrounded one may have died. As measured on 2026-09-17, completed jobs ran a
@@ -131,6 +137,42 @@ which retrieves over the network on each poll. Past about 22 min, suspect an
 authentication or retrieval fault rather than slowness, because a working long
 poll and a wedged one look identical. Those figures describe one account and
 machine; re-measure locally rather than treating them as universal.
+
+## Resubmitting a wedged job
+
+A job that has produced no node text for a full hour is wedged. You have
+standing permission to resubmit its prompt as a new job without asking first.
+The hour is a floor, not a deadline to act at: it exists because a working long
+poll and a wedged one look identical, so elapsed time is the only signal that
+separates them, and `--timings` uses that same one-hour threshold to call
+completed jobs abandoned rather than slow.
+
+Resubmitting requires the job to have produced **nothing**, not merely to be old.
+Check both before you act:
+
+1. `--status <job-id>` reads the local record with no network. A job whose
+   `status` is still `pending` after an hour with a rising `pollCount` is the
+   wedged case: it is polling a conversation that will never yield, because the
+   server finished or dropped the turn long ago.
+2. Read the job file and confirm there is no answer data. A job that produced
+   nodes but no final answer is still generating, and resubmitting it wastes an
+   attempt and can duplicate a turn that is about to land.
+
+A job in this state is safe to abandon: nothing is lost, because it has nothing
+to lose. Keep its record rather than deleting it, so a later reader can see that
+the prompt was submitted twice and why.
+
+Measured on 2026-09-30, which is why this section exists. One job ran to
+`pollCount` 451 over 10.6 hours while producing no node text at all; the local
+record held only the prompt, the conversation id, and polling metadata. Quota was
+not the constraint: four local attempts against an allowance of 200, with
+`paceStatus` reporting `within_local_pace`. Every signal said healthy except the
+answer that never came, which is the shape of a wedged job and the reason a
+caller needs permission to stop waiting.
+
+Resubmitting costs a model turn, so do it once, with the original prompt
+unchanged, and treat a second wedge as a fault to report rather than a prompt to
+send again.
 
 Run `--timings` to re-measure from saved job records. It reads local state only
 and spends no submission or model turn. It reports the sample it used and flags
