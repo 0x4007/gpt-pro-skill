@@ -47,13 +47,20 @@ deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=cha
   "$SKILL_DIR/scripts/ask-gpt-pro.ts" "<prompt>"
 ```
 
-For a complex question, submit in the background, keep the job ID, and continue
-independent work:
+For a complex question, prefer one command that owns the whole lifecycle. This
+submits and stays resident retrieving the answer, so there is no handle to
+abandon:
 
 ```sh
 deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=chatgpt.com \
-  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --background "<prompt>"
+  "$SKILL_DIR/scripts/ask-gpt-pro.ts" --background --keep-polling "<prompt>"
 ```
+
+`--background` alone submits and exits, and **nothing then polls the job**. Only
+use it when you will run `--result <job-id>` or `--watch` yourself in the same
+working session; a caller that ends its turn after `--background` strands the
+answer until someone notices. This has happened twice, so treat the bare
+`--background` form as the exception rather than the default.
 
 Then retrieve that job, or all pending jobs, through the agent's background
 process tool:
@@ -110,6 +117,11 @@ described under "Resubmitting a wedged job" below. Local tests:
 `deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
 
 ## Retrieval cadence
+
+A job with `pollCount: 0` that is older than a few minutes has no retrieval owner
+and is stranded, not dead: generation continues on the server and only a
+retrieval is missing. `--jobs` and `--status` label this as `UNRETRIEVED`; never
+resubmit such a job, retrieve it.
 
 `--result` and `--watch` are long polls, not single checks. They take the
 per-job lock, poll internally (every 5 s for the first six attempts, then every

@@ -28,9 +28,25 @@ export {
 };
 export type { WebSession };
 
+/**
+ * A job that was submitted and never polled is stranded, not dead: generation continues on the
+ * server and the answer only needs a retrieval. Marking it here makes --jobs and --status say so
+ * instead of leaving pollCount 0 to be misread as a cancellation.
+ */
+function retrievalNote(job: ProJob): string | undefined {
+  if (job.status === "completed") return undefined;
+  const ageMs = Date.now() - Date.parse(job.createdAt);
+  if (!Number.isFinite(ageMs)) return undefined;
+  if ((job.pollCount ?? 0) === 0 && ageMs > UNRETRIEVED_AFTER_MS) {
+    return "UNRETRIEVED: submitted " + Math.round(ageMs / 60_000) + " min ago and never polled; run --result " + job.id;
+  }
+  return undefined;
+}
+
 function jobSummary(job: ProJob) {
   return {
     jobId: job.id,
+    retrieval: retrievalNote(job),
     status: job.status,
     model: job.model,
     createdAt: job.createdAt,
@@ -46,9 +62,12 @@ function jobSummary(job: ProJob) {
 }
 
 const HELP_TEXT =
-  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
+  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--background [--keep-polling]] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\n--background submits and exits; nothing is retrieved until a separate --result or --watch runs.\nAdd --keep-polling to submit and stay resident retrieving the answer in one command.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
 
 const MINUTE_MS = 60_000;
+
+/** A submitted job untouched for this long has no retrieval owner and must say so. */
+const UNRETRIEVED_AFTER_MS = 5 * MINUTE_MS;
 
 /**
  * Duration ranges in minutes for the histogram. Fixed ranges keep resolution where the
@@ -237,6 +256,11 @@ async function watchCommand(args: string[], store: JobStore): Promise<void> {
 async function promptCommand(args: string[], store: JobStore): Promise<void> {
   const background = args[0] === "--background";
   let promptArgs = background ? args.slice(1) : args;
+  // Submitting without retrieving is the documented way jobs are stranded: --background exits
+  // immediately, so the answer waits for a later --result that the caller may never run.
+  // --keep-polling keeps one process owning the whole lifecycle instead.
+  const keepPolling = background && promptArgs[0] === "--keep-polling";
+  if (keepPolling) promptArgs = promptArgs.slice(1);
   if (promptArgs[0] === "--") promptArgs = promptArgs.slice(1);
   else if (promptArgs[0]?.startsWith("--")) {
     throw new Error("Unknown option; use -- before a prompt that starts with --");
@@ -248,7 +272,15 @@ async function promptCommand(args: string[], store: JobStore): Promise<void> {
     const job = await submitJob(prompt, store, (job) => {
       console.error("GPT Pro job: " + job.id);
     });
-    console.log(JSON.stringify(jobSummary(job)));
+    if (!keepPolling) {
+      console.log(JSON.stringify(jobSummary(job)));
+      return;
+    }
+    // Report the handle before the long poll so an interrupted caller still has the job ID.
+    console.error("GPT Pro job: " + job.id + " (retrieving; resume with --result " + job.id + ")");
+    console.log(JSON.stringify({ jobId: job.id, status: "retrieving" }));
+    const answer = await resultForJob(job.id, store);
+    console.log(JSON.stringify({ jobId: job.id, status: "completed", answer }));
   } else console.log(await run(prompt, store));
 }
 
