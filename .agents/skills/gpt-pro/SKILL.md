@@ -47,7 +47,7 @@ deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-net=cha
   "$SKILL_DIR/scripts/ask-gpt-pro.ts" "<prompt>"
 ```
 
-The command prints the job ID before it waits; record it as soon as it appears. Service that session while the job is pending, and read `--status <job-id>`, a local file read with no network. Other work may run between checks; do not end the turn merely because the command yielded. A session is supervised only while it is being serviced: this is not background delivery, and this host reaps detached processes (`nohup`, `&`, `disown`) at turn end. The `--background` and `--keep-polling` switches were removed for that reason and are rejected before submission.
+The command prints the job ID before it waits (the job line goes to stderr; stdout carries only the final answer, so a machine caller must read both streams); record it as soon as it appears. Service that session while the job is pending, and read `--status <job-id>`, a local file read with no network. Other work may run between checks; do not end the turn merely because the command yielded. A session is supervised only while it is being serviced: this is not background delivery, and this host reaps detached processes (`nohup`, `&`, `disown`) at turn end. The `--background` and `--keep-polling` switches were removed for that reason and are rejected before submission.
 
 Keep one retrieval process per job. A second retriever exits 10 with `ALREADY_OWNED` instead of waiting: treat that as existing ownership, supervise the live owner, and only after it exits resume once with:
 

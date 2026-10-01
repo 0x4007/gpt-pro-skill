@@ -79,7 +79,7 @@ function jobSummary(job: ProJob) {
 }
 
 const HELP_TEXT =
-  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\nRun the submit command in a managed session you keep until it returns; it prints the job ID first.\nDetaching a poller (nohup, &, disown, or the removed --background switches) strands the job here.\nA second retrieval owner exits 10 with ALREADY_OWNED instead of waiting.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
+  "Usage: ask-gpt-pro.ts [--state-dir /absolute/path] [--] <prompt>\n       ask-gpt-pro.ts --jobs | --status <job-id> | --result <job-id> | --watch\n       ask-gpt-pro.ts --timings [--since YYYY-MM-DD]\nSetup: --auth-import <file|-> | --auth-check\nPrompts may also be piped on stdin. Results are cached; retrieval never submits.\nRun the submit command in a managed session you keep until it returns; it prints the job ID on stderr first, and stdout carries only the payload.\nDetaching a poller (nohup, &, disown, or the removed --background switches) strands the job here.\nA second retrieval owner exits 10 with ALREADY_OWNED instead of waiting.\n--watch retrieves the current pending jobs concurrently and prints JSON lines.\n--timings summarises locally measured durations; it uses no network and no model turn.";
 
 const MINUTE_MS = 60_000;
 
