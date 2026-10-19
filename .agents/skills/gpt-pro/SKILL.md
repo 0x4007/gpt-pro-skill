@@ -95,7 +95,20 @@ Do not claim universal compatibility or reject Linux solely by OS. On the
 Windows-deferred Guacamole/XFCE desktop, Chromium is the Web Browser and
 HTTP/HTTPS default using `/home/codex/.local/share/gpt-pro-browser-login`; keep
 the locked original profile intact. This is a maintainer environment note and
-does not authorize cross-host credential or session transfer.
+does not itself authorize a cross-host transfer.
+
+When the user explicitly asks to move a verified session from a host where
+browser sign-in works to another host, run on the destination:
+
+```sh
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-run=ssh --allow-net=chatgpt.com "$SKILL_DIR/scripts/transfer-session.ts" --from <user@source-host>
+```
+
+It reads the source default state over SSH, verifies the session before writing,
+and refuses a different account unless `--replace-account` is explicit. A local
+export can use `--from-file /absolute/path/.env`; `--dry-run` verifies and
+compares without writing. A changed account keeps a private backup beside
+`.env`. Never print session contents, and configure jump hosts in SSH config.
 
 A job is retrievable for six hours after submission. Generation continues on the server, so hold each waiting command in a live session and keep its handle. Retrieval never submits the prompt again for a job that is still generating. Completed results are cached and can be reread without network access. A job that has produced nothing for a full hour is wedged; see "A wedged job" below. Local tests: `deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
 

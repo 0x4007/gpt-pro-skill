@@ -42,6 +42,21 @@ headless pairing are not yet supported. Windows development and verification are
 deferred. Browser protections are never disabled.
 The normal request runtime uses the saved session without launching a browser.
 
+## Transfer a session between hosts
+
+Run this on the destination after browser authentication succeeds elsewhere:
+
+```sh
+deno run --allow-env=HOME,USERPROFILE --allow-read --allow-write --allow-run=ssh --allow-net=chatgpt.com "$SKILL_DIR/scripts/transfer-session.ts" --from <user@source-host>
+```
+
+The source default is `~/.local/share/gpt-pro/.env`; use `--from-state-dir` for
+another absolute path, or `--from-file /absolute/path/.env` for a local export.
+The transfer verifies the session before writing, writes atomically with `0600`,
+and refuses a different account unless `--replace-account` is explicit. Use
+`--dry-run` to verify and compare without writing. Output contains only account
+fingerprints and HTTP status, never tokens, cookies, or process identifiers.
+
 Then submit:
 
 ```sh
