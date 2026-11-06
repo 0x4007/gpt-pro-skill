@@ -303,7 +303,7 @@ Deno.test("a saved cooldown past the wedge floor stops without a request and kee
   }
 });
 
-Deno.test("stream capture persists an early conversation ID before an interrupted stream", async () => {
+Deno.test("stream capture hands off after persisting an early conversation ID despite a later disconnect", async () => {
   const chunks = ['data: {"conversation_', 'id":"fixture-conversation"}\r', "\n\r\n"];
   let index = 0,
     saved = "";
@@ -323,9 +323,35 @@ Deno.test("stream capture persists an early conversation ID before an interrupte
   } catch {
     failed = true;
   }
-  if (!failed || saved !== "fixture-conversation") {
-    throw new Error("Lost conversation ID on disconnect");
+  if (failed || saved !== "fixture-conversation") {
+    throw new Error("A saved conversation ID did not hand off before disconnect");
   }
+});
+
+Deno.test("a saved conversation ID releases an open submission stream without waiting for handoff", async () => {
+  let saved = "";
+  const cancelCalls: boolean[] = [];
+  let streamController: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+      controller.enqueue(new TextEncoder().encode('event: delta_encoding\r\ndata: "v1"\r\n\r\n'));
+      controller.enqueue(new TextEncoder().encode('event: delta\r\ndata: {"conversation_id":"fixture-conversation"}\r\n\r\n'));
+    },
+    cancel() {
+      cancelCalls.push(true);
+    },
+  });
+  const timeout = setTimeout(() => streamController.error(new Error("Submission stream was still being awaited after the ID was saved")), 100);
+  try {
+    await captureConversation(new Response(stream), (id) => {
+      saved = id;
+      return Promise.resolve();
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (saved !== "fixture-conversation" || cancelCalls.length !== 1) throw new Error("Submission did not release its saved conversation for retrieval");
 });
 
 Deno.test("handoff closes the stream without waiting for terminal response", async () => {
@@ -370,6 +396,53 @@ Deno.test("answer matching survives a later turn and rejects ambiguous or wrong-
   value.mapping.answer.message.metadata.model_slug = "other-model";
   if (answerForMessage(value, job.messageId) !== undefined) {
     throw new Error("Wrong model accepted");
+  }
+});
+
+Deno.test("a late visible research answer is retrieved when its final child is explicitly hidden", async () => {
+  const job = fixture();
+  const value = conversation(job);
+  value.mapping.answer.message.content.parts = ["visible ", "research answer"];
+  const nodes: Record<string, unknown> = value.mapping;
+  nodes.hidden = {
+    parent: "answer",
+    message: {
+      ...structuredClone(value.mapping.answer.message),
+      metadata: { model_slug: "gpt-6-pro", is_visually_hidden_from_conversation: true },
+      content: { content_type: "text", parts: ["hidden research index"] },
+    },
+  };
+  value.current_node = "hidden";
+  let calls = 0;
+  const answer = await pollJob(
+    {
+      fetch: () => {
+        calls++;
+        return Promise.resolve(Response.json(value));
+      },
+    },
+    job,
+    async () => {},
+    {
+      now: () => WEDGE_FLOOR_MS + WEDGE_GRACE_MS,
+      sleep: () => {
+        throw new Error("A completed research answer must not wait for another poll");
+      },
+    }
+  );
+  if (answer !== "visible research answer" || calls !== 1 || job.status !== "completed") {
+    throw new Error("Hidden final made a completed visible answer ambiguous");
+  }
+  for (const hidden of [false, "true", 1, undefined]) {
+    nodes.hidden = {
+      parent: "answer",
+      message: {
+        ...structuredClone(value.mapping.answer.message),
+        metadata: { model_slug: "gpt-6-pro", is_visually_hidden_from_conversation: hidden },
+        content: { content_type: "text", parts: ["another visible answer"] },
+      },
+    };
+    if (answerForMessage(value, job.messageId) !== undefined) throw new Error("Ambiguous visible answers must still fail closed");
   }
 });
 

@@ -35,7 +35,9 @@ function completedAssistantMessage(node: JsonObject): JsonObject | undefined {
   if (message.channel !== "final" || message.status !== "finished_successfully" || message.end_turn !== true) return undefined;
   const content = objectValue(message.content);
   if (content?.content_type !== "text" || !Array.isArray(content.parts)) return undefined;
-  const modelSlug = objectValue(message.metadata)?.model_slug;
+  const metadata = objectValue(message.metadata);
+  if (metadata?.is_visually_hidden_from_conversation === true) return undefined;
+  const modelSlug = metadata?.model_slug;
   if (modelSlug && modelSlug !== MODEL) return undefined;
   return message;
 }

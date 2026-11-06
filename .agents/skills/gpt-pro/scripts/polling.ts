@@ -106,7 +106,8 @@ export async function pollJob(
   const expiryAt = Number.isFinite(submittedAt) ? submittedAt + POLL_WINDOW_MS : Number.POSITIVE_INFINITY;
   if (now() >= expiryAt) {
     job.status = "timed_out";
-    job.lastError = "Automatic retrieval closed 6 hours after submission; the server outcome is unknown. Report the window fault; do not resubmit automatically.";
+    job.lastError =
+      "Automatic retrieval closed 6 hours after submission; the server outcome is unknown. Report the window fault; do not resubmit automatically.";
     await save(job);
     throw new Error(job.lastError);
   }
@@ -145,7 +146,9 @@ export async function pollJob(
           String(Math.round(WEDGE_FLOOR_MS / 60_000)) +
           "+ min and " +
           String(job.pollCount) +
-          " polls and a retrieval cooldown is still pending (next poll " + (job.nextPollAt ?? "unknown") + "). Honor the cooldown: check --status and resume this job; do not resubmit."
+          " polls and a retrieval cooldown is still pending (next poll " +
+          (job.nextPollAt ?? "unknown") +
+          "). Honor the cooldown: check --status and resume this job; do not resubmit."
         : "No answer after " +
           String(Math.round(WEDGE_FLOOR_MS / 60_000)) +
           "+ min and " +
@@ -262,7 +265,9 @@ export async function captureConversation(response: Response, saveId: (id: strin
       await saveId(parsed.conversationId);
       saved = parsed.conversationId;
     }
-    return parsed.terminal || parsed.eventTypes.includes("stream_handoff");
+    // Once the ID is durable, retrieval owns completion. A healthy submission stream can
+    // remain open without a handoff marker, so awaiting its terminal event strands the job.
+    return saved !== undefined || parsed.terminal || parsed.eventTypes.includes("stream_handoff");
   }
   try {
     for (;;) {
