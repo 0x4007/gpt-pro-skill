@@ -80,11 +80,7 @@ selected browser profile and saves verified state. macOS Keychain or Linux
 Secret Service may show a normal permission prompt. Multiple profiles require
 an interactive choice. Noninteractive execution never waits for a choice.
 
-On rejection, stop and report the result. After the user signs in again, an
-interactive reconnect can use a changed browser sign-in for the same account.
-An unchanged login or changed account is rejected without replacing credentials.
-Preserve existing jobs and resume by ID; login never authorizes a model submission.
-Never read tokens or cookies into agent context or disable browser protections.
+Distinguish a technical integration failure from an actual sign-in or access rejection. Repair technical failures using the recovery procedure below. When the service rejects authentication or requires user action, report the result. After the user signs in again, an interactive reconnect can use a changed browser sign-in for the same account. An unchanged login or changed account is rejected without replacing credentials. Preserve existing jobs and resume by ID; login never authorizes a model submission. Never read tokens or cookies into agent context or disable browser protections.
 
 Live support: Arch Linux ARM, Chromium 153.0.8010.36, database 24, existing v10
 cookies; macOS Brave was verified previously. Linux v11 through Secret Service
@@ -113,6 +109,12 @@ compares without writing. A changed account keeps a private backup beside
 A job is retrievable for six hours after submission. Generation continues on the server, so hold each waiting command in a live session and keep its handle. Retrieval never submits the prompt again for a job that is still generating. Completed results are cached and can be reread without network access. A job that has produced nothing for a full hour is wedged; see "A wedged job" below. Local tests: `deno test --allow-read --allow-write "$SKILL_DIR/tests/"`.
 
 ## Cadence and faults
+
+For a recoverable technical failure in this skill, automatically diagnose its root cause, reproduce it with a meaningful regression, apply the smallest correction, and run the repository's applicable checks. Commit, push, and integrate the tested repair into the skill's canonical Git repository before retrying the interrupted operation. Preserve the failure evidence, tested source revision, and operation state; a local edit or a passing fixture alone is not a completed recovery.
+
+Retry retrieval with the existing job ID. If submission outcome is uncertain, reconcile the saved job and upstream outcome before any further submission; a failure never expands the original submission budget. If the failure occurred before job creation, retry the original prompt only within its unused authorization. Keep account identity, credentials, owner locks, rate-limit cooldowns, wedge rules, and the original six-hour retrieval deadline intact. Normal supported same-account renewal remains permitted.
+
+Default to one bounded repair attempt per diagnosed root cause and one verification retry. A new diagnosis needs new evidence; never repeat an unchanged failing operation in a loop. Report a blocker when recovery needs user action, encounters a real access or security boundary, remains ambiguous, depends on an external outage or cooldown, or repeats without new evidence. A wedged job still requires explicit unused replacement authorization under "A wedged job"; technical recovery does not create another generation allowance.
 
 A job with `pollCount: 0` that is older than a few minutes has no retrieval owner and is stranded, not dead: generation continues on the server and only a retrieval is missing. Never resubmit it; retrieve it.
 

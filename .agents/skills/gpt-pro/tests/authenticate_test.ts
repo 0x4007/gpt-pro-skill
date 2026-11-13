@@ -265,6 +265,73 @@ Deno.test("renewal rejects account changes and throttling without retries", asyn
   }
 });
 
+Deno.test("current page metadata renews the same account without retaining a stale numeric build", async () => {
+  const revision = "402a334e65bfa04acd6d685c258e6ee99dddc216";
+  const current = `<html data-build="${revision}" data-client-build-revision="${revision}">`;
+  let requests = 0;
+  const previous = fixture();
+  const before = JSON.stringify(previous);
+  const session = await sessionFromCookies(cookie, "fixture-agent", previous, () => {
+    requests++;
+    return Promise.resolve(requests === 1 ? Response.json({ accessToken: token() }) : new Response(current));
+  });
+  if (
+    requests !== 2 ||
+    session.accessToken !== previous.accessToken ||
+    session.headers["oai-client-version"] !== revision ||
+    Object.hasOwn(session.headers, "oai-client-build-number") ||
+    JSON.stringify(previous) !== before
+  ) {
+    throw new Error("Current metadata changed the account, retained a stale build, or mutated prior state");
+  }
+  parseWebSession(encode(session));
+});
+
+Deno.test("invalid or ambiguous page metadata preserves saved authentication without verification or retry", async () => {
+  const revision = "402a334e65bfa04acd6d685c258e6ee99dddc216";
+  const current = `<html data-build="${revision}" data-client-build-revision="${revision}">`;
+  const invalid = [
+    `<html data-build="${revision}">`,
+    current.replace(revision, "a".repeat(40)),
+    current.replace('">', '" data-seq="not-a-number">'),
+    current.replace('">', '" data-seq="">'),
+    current.replace('">', '" data-seq=123>'),
+    current.replace('">', '" data-client-build-revision="broken">'),
+    current.replace('">', `" data-build="${revision}">`),
+    current.replace('">', '" data-client-build-revision>'),
+    current + current,
+    html.replace(' data-seq="12345"', ""),
+  ];
+  const directory = pathToFileURL((await Deno.makeTempDir()) + "/");
+  await Deno.chmod(directory, 0o700);
+  const path = new URL(".env", directory);
+  const before = encode(fixture(1));
+  const original = globalThis.fetch;
+  try {
+    for (const page of invalid) {
+      await Deno.writeTextFile(path, before, { mode: 0o600 });
+      let requests = 0;
+      globalThis.fetch = () => {
+        requests++;
+        if (requests > 2) throw new Error("Invalid metadata reached verification or a retry");
+        return Promise.resolve(requests === 1 ? Response.json({ accessToken: token() }) : new Response(page));
+      };
+      let rejected = false;
+      try {
+        await loadWebSession(directory);
+      } catch (error) {
+        rejected = String(error).includes("client metadata changed");
+      }
+      if (!rejected || requests !== 2 || (await Deno.readTextFile(path)) !== before) {
+        throw new Error("Invalid metadata was accepted, retried, or saved");
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("authentication rejection identifies a browser challenge without leaking the body or retrying", async () => {
   let calls = 0;
   let message = "";

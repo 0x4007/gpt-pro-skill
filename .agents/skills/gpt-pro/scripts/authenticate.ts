@@ -48,13 +48,27 @@ export function updateCookies(header: string, response: Response): string {
   return entries.join("; ");
 }
 
-export function clientMetadata(html: string): { build: string; version: string } {
-  const root = /<html\s[^>]*>/i.exec(html)?.[0] ?? "";
-  const build = /\bdata-seq="(\d+)"/.exec(root)?.[1];
-  const version = /\bdata-build="(prod-[a-f0-9]+)"/.exec(root)?.[1];
-  if (!build || !version) {
-    throw new AuthenticationError("ChatGPT client metadata changed; authentication was not saved");
+export function clientMetadata(html: string): { build: string | undefined; version: string } {
+  const failure = new AuthenticationError("ChatGPT client metadata changed; authentication was not saved");
+  const roots = html.match(/<html(?=[\s>])[^>]*>/gi) ?? [];
+  if (roots.length !== 1) throw failure;
+  const attributes = new Map<string, string>();
+  for (const match of roots[0].matchAll(/\s(data-(?:seq|build|client-build-revision))(?=[\s=>])(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/gi)) {
+    const name = match[1].toLowerCase();
+    const captures: readonly (string | undefined)[] = match;
+    const value = captures[2] ?? captures[3];
+    if (attributes.has(name) || value === undefined) throw failure;
+    attributes.set(name, value);
   }
+  const build = attributes.get("data-seq");
+  const version = attributes.get("data-build");
+  const revision = attributes.get("data-client-build-revision");
+  if (build !== undefined && !/^\d+$/.test(build)) throw failure;
+  if (revision !== undefined) {
+    if (!/^[a-f0-9]{40}$/.test(revision) || version !== revision) throw failure;
+    return { build, version: revision };
+  }
+  if (!build || !version || !/^prod-[a-f0-9]+$/.test(version)) throw failure;
   return { build, version };
 }
 
@@ -111,20 +125,21 @@ export async function sessionFromCookies(cookie: string, userAgent: string, prev
   } catch {
     throw new AuthenticationError("Invalid ChatGPT device cookie");
   }
-  const session = {
+  const session: WebSession = {
     accessToken,
     cookie,
     headers: {
       ...previous?.headers,
       "oai-device-id": deviceId,
       "oai-session-id": previous?.headers["oai-session-id"] ?? crypto.randomUUID(),
-      "oai-client-build-number": metadata.build,
       "oai-client-version": metadata.version,
       "user-agent": userAgent,
       "oai-language": previous?.headers["oai-language"] ?? "en-US",
       "accept-language": previous?.headers["accept-language"] ?? "en-US,en;q=0.9",
     },
   };
+  if (metadata.build !== undefined) session.headers["oai-client-build-number"] = metadata.build;
+  else delete session.headers["oai-client-build-number"];
   return parseWebSession("CHATGPT_WEB_SESSION=" + JSON.stringify(session));
 }
 
