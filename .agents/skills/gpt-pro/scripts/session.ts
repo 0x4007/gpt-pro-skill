@@ -113,6 +113,7 @@ function parseSessionHeaders(value: unknown): Record<string, string> {
   // normalized view then confirms each required header is present and non-blank.
   const validated = new Headers(clean);
   for (const name of REQUIRED_SESSION_HEADERS) {
+    if (name === "oai-client-build-number" && !validated.has(name) && /^[a-f0-9]{40}$/.test(clean["oai-client-version"])) continue;
     if (!validated.get(name)?.trim()) throw new Error();
   }
   return clean;
