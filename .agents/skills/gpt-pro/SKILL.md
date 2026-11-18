@@ -80,6 +80,8 @@ selected browser profile and saves verified state. macOS Keychain or Linux
 Secret Service may show a normal permission prompt. Multiple profiles require
 an interactive choice. Noninteractive execution never waits for a choice.
 
+Saved-session verification keeps server-issued session rotations under the authentication lock. If ChatGPT returns `RefreshAccessTokenError`, sign in again to the same account. An unreadable session response or an unexpected format needs technical diagnosis.
+
 Distinguish a technical integration failure from an actual sign-in or access rejection. Repair technical failures using the recovery procedure below. When the service rejects authentication or requires user action, report the result. After the user signs in again, an interactive reconnect can use a changed browser sign-in for the same account. An unchanged login or changed account is rejected without replacing credentials. Preserve existing jobs and resume by ID; login never authorizes a model submission. Never read tokens or cookies into agent context or disable browser protections.
 
 Live support: Arch Linux ARM, Chromium 153.0.8010.36, database 24, existing v10
