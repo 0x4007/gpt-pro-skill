@@ -265,6 +265,32 @@ Deno.test("renewal rejects account changes and throttling without retries", asyn
   }
 });
 
+Deno.test("renewal distinguishes service rejection from unreadable session data", async () => {
+  const cases: [Response, string][] = [
+    [Response.json({ error: "RefreshAccessTokenError", accessToken: token("fixture-account", 1) }), "RefreshAccessTokenError"],
+    [Response.json({}), "no signed-in session"],
+    [new Response("PRIVATE_FIXTURE"), "session JSON"],
+    [Response.json({ user: {}, changedField: "PRIVATE_FIXTURE" }), "session format"],
+    [Response.json({ error: "PRIVATE_FIXTURE" }), "session error"],
+    [Response.json({ accessToken: "PRIVATE_FIXTURE" }), "token expiry"],
+  ];
+  for (const [response, expected] of cases) {
+    let message = "";
+    let requests = 0;
+    try {
+      await sessionFromCookies(cookie, "fixture-agent", fixture(), () => {
+        requests++;
+        return Promise.resolve(response);
+      });
+    } catch (error) {
+      message = String(error);
+    }
+    if (!message.includes(expected) || message.includes("PRIVATE_FIXTURE") || requests !== 1) {
+      throw new Error("Incorrect or unsafe diagnostic for " + expected);
+    }
+  }
+});
+
 Deno.test("current page metadata renews the same account without retaining a stale numeric build", async () => {
   const revision = "402a334e65bfa04acd6d685c258e6ee99dddc216";
   const current = `<html data-build="${revision}" data-client-build-revision="${revision}">`;
@@ -422,6 +448,78 @@ Deno.test("failed expired-session renewal preserves the previous file", async ()
     }
   } finally {
     globalThis.fetch = original;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("saved-session verification persists rotations and concurrent checks use the latest verified state", async () => {
+  const dir = await Deno.makeTempDir();
+  const directory = pathToFileURL(dir + "/");
+  const path = new URL(".env", directory);
+  const before = fixture();
+  await Deno.writeTextFile(path, encode(before), { mode: 0o600 });
+  const original = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).pathname !== "/backend-api/models") throw new Error("Unexpected verification request");
+    const stored = request.headers.get("cookie") ?? "";
+    const previous = requests++;
+    if (previous > 0 && !stored.includes("=rotation-" + String(previous))) throw new Error("Verification reused stale state");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return new Response("{}", { headers: { "set-cookie": "__Secure-next-auth.session-token=rotation-" + String(previous + 1) + "; Secure; HttpOnly" } });
+  };
+  try {
+    const outcomes = await Promise.allSettled([authenticate(directory), authenticate(directory)]);
+    const saved = parseWebSession(await Deno.readTextFile(path));
+    if (
+      outcomes.some((result) => result.status !== "fulfilled") ||
+      requests !== 2 ||
+      !saved.cookie.includes("=rotation-2") ||
+      saved.accessToken !== before.accessToken
+    ) {
+      throw new Error("Concurrent verifications did not preserve the latest rotation");
+    }
+    const { mode } = await Deno.stat(path);
+    if (Deno.build.os !== "windows" && (mode === null || (mode & 0o777) !== 0o600)) throw new Error("Unexpected saved-session file permissions");
+  } finally {
+    globalThis.fetch = original;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("interactive reconnect is offered for a rejected refresh and withheld on a technical failure", async () => {
+  const dir = await Deno.makeTempDir();
+  const directory = pathToFileURL(dir + "/");
+  const path = new URL(".env", directory);
+  const before = encode(fixture(1));
+  await Deno.writeTextFile(path, before, { mode: 0o600 });
+  const originalFetch = globalThis.fetch;
+  const originalTerminal = Deno.stdin.isTerminal.bind(Deno.stdin);
+  const originalPrompt = globalThis.prompt;
+  try {
+    Deno.stdin.isTerminal = () => true;
+    let prompts = 0;
+    globalThis.prompt = () => {
+      prompts++;
+      return null;
+    };
+    for (const response of [new Response("bad JSON"), Response.json({ error: "RefreshAccessTokenError" })]) {
+      globalThis.fetch = () => Promise.resolve(response);
+      await authenticate(directory).then(
+        () => {
+          throw new Error("Unexpected successful authentication");
+        },
+        () => {}
+      );
+      if (prompts !== Number(response.headers.get("content-type") === "application/json") || (await Deno.readTextFile(path)) !== before) {
+        throw new Error("Incorrect reconnect prompt or saved-session mutation");
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Deno.stdin.isTerminal = originalTerminal;
+    globalThis.prompt = originalPrompt;
     await Deno.remove(dir, { recursive: true });
   }
 });

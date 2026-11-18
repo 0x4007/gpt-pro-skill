@@ -4,6 +4,7 @@ import { ChatSession, importWebSession, parseWebSession, type WebSession } from 
 import { ensurePrivateState, stateDirectory } from "./state.ts";
 
 class AuthenticationError extends Error {}
+class SignInRequired extends AuthenticationError {}
 
 const ORIGIN = "https://chatgpt.com";
 const SESSION_COOKIE = /^__Secure-next-auth\.session-token(?:\.\d+)?$/;
@@ -89,24 +90,40 @@ async function authFetch(path: string, cookie: string, userAgent: string, fetche
     await response.body?.cancel();
     let detail = isHtml ? " (HTML response before session JSON)" : "";
     if (isChallenge) detail = " (browser verification required)";
-    throw new AuthenticationError(`ChatGPT authentication at ${path} returned HTTP ${String(response.status)}${detail}; no automatic retry`);
+    const message = `ChatGPT authentication at ${path} returned HTTP ${String(response.status)}${detail}; no automatic retry`;
+    throw response.status === 401 && !isChallenge ? new SignInRequired(message) : new AuthenticationError(message);
   }
   return response;
 }
 
+async function readRenewedToken(response: Response): Promise<string> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new AuthenticationError("ChatGPT returned unreadable session JSON; existing authentication was preserved");
+  }
+  if (body === null || (typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 0)) {
+    throw new SignInRequired("ChatGPT returned no signed-in session; sign in again to the same account");
+  }
+  if (typeof body !== "object" || Array.isArray(body)) throw new AuthenticationError("Unrecognized ChatGPT session format");
+  if ("error" in body && body.error) {
+    if (body.error === "RefreshAccessTokenError")
+      throw new SignInRequired("ChatGPT rejected renewal (RefreshAccessTokenError); sign in again to the same account");
+    throw new AuthenticationError("ChatGPT returned a session error; existing authentication was preserved");
+  }
+  if (!("accessToken" in body) || typeof body.accessToken !== "string" || !body.accessToken)
+    throw new AuthenticationError("Unrecognized ChatGPT session format");
+  if (tokenExpiry(body.accessToken) <= Date.now()) throw new SignInRequired("ChatGPT returned an expired access token; sign in again to the same account");
+  return body.accessToken;
+}
+
 export async function sessionFromCookies(cookie: string, userAgent: string, previous?: WebSession, fetcher: typeof fetch = fetch): Promise<WebSession> {
   if (!cookie.split(";").some((entry) => SESSION_COOKIE.test(entry.trim().split("=", 1)[0]))) {
-    throw new AuthenticationError("No ChatGPT sign-in cookie; sign in to ChatGPT once, then run authenticate.ts");
+    throw new SignInRequired("No ChatGPT sign-in cookie; sign in to ChatGPT once, then run authenticate.ts");
   }
   const response = await authFetch("/api/auth/session", cookie, userAgent, fetcher);
-  let accessToken: string;
-  try {
-    const body = await response.json();
-    if (typeof body?.accessToken !== "string" || tokenExpiry(body.accessToken) <= Date.now()) throw new AuthenticationError();
-    accessToken = body.accessToken;
-  } catch {
-    throw new AuthenticationError("ChatGPT session has expired or was revoked; sign in once, then run authenticate.ts");
-  }
+  const accessToken = await readRenewedToken(response);
   if (previous && subject(previous.accessToken) !== subject(accessToken)) {
     throw new AuthenticationError("ChatGPT renewal changed the account; existing authentication was preserved");
   }
@@ -182,10 +199,18 @@ async function withAuthLock<T>(directory: URL, action: () => Promise<T>): Promis
   }
 }
 
-export async function renewWebSession(directory: URL): Promise<WebSession> {
+export async function renewWebSession(directory: URL, verifyForSubject?: string): Promise<WebSession> {
   return await withAuthLock(directory, async () => {
-    const previous = parseWebSession(await Deno.readTextFile(new URL(".env", directory)), true);
+    const previous = await readSavedSession(directory);
+    if (!previous) throw new AuthenticationError("Saved authentication was removed during verification");
+    if (verifyForSubject !== undefined && subject(previous.accessToken) !== verifyForSubject)
+      throw new AuthenticationError("Saved account changed during verification");
     if (tokenExpiry(previous.accessToken) > Date.now() + 300000) {
+      if (verifyForSubject !== undefined) {
+        const original = previous.cookie;
+        await verifySession(previous);
+        if (previous.cookie !== original) await importWebSession(JSON.stringify(previous), directory);
+      }
       return previous;
     }
     const renewed = await sessionFromCookies(previous.cookie, previous.headers["user-agent"], previous);
@@ -206,7 +231,8 @@ async function verifySession(session: WebSession): Promise<void> {
   });
   await response.body?.cancel();
   if (!response.ok) {
-    throw new AuthenticationError(`ChatGPT authentication check returned HTTP ${String(response.status)}; existing authentication was preserved`);
+    const message = `ChatGPT authentication check returned HTTP ${String(response.status)}; existing authentication was preserved`;
+    throw response.status === 401 ? new SignInRequired(message) : new AuthenticationError(message);
   }
   session.cookie = client.cookies.header();
 }
@@ -519,15 +545,11 @@ async function readSavedSession(directory: URL): Promise<WebSession | undefined>
 
 async function connectSavedSession(previous: WebSession, directory: URL): Promise<boolean> {
   try {
-    if (tokenExpiry(previous.accessToken) <= Date.now() + 300000) {
-      await renewWebSession(directory);
-    } else {
-      await verifySession(previous);
-    }
+    await renewWebSession(directory, subject(previous.accessToken));
     console.log(JSON.stringify({ authenticated: true, source: "saved_session", modelSubmission: false, submissionEligibility: "not_tested" }));
     return true;
   } catch (error) {
-    if (!Deno.stdin.isTerminal()) throw error;
+    if (!(error instanceof SignInRequired) || !Deno.stdin.isTerminal()) throw error;
     console.error(failureMessage(error));
     if (prompt("Have you signed in again? Reconnect the same account from a changed browser login (yes/no)") !== "yes") throw error;
     return false;
